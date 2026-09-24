@@ -5214,6 +5214,54 @@ def party_resolve_action(
 
 
 @mcp.tool
+def party_push(
+    narrative: Annotated[str, Field(description="Public narrative for the whole table. May be empty ONLY if private_messages is given.")] = "",
+    private_messages: Annotated[str | None, Field(description="JSON object of player-specific private messages, e.g. {\"player_id\": \"secret\"}")] = None,
+    dm_notes: Annotated[str | None, Field(description="DM-only notes (not sent to players)")] = None,
+) -> str:
+    """Push a DM message to connected players WITHOUT a player action to answer.
+
+    Unlike party_resolve_action, this needs no action_id: use it for events the
+    DM initiates (time passing, a scene starting on its own, an owed decision a
+    player hasn't been asked about yet). Offline players receive it on reconnect.
+
+    Do not attach private_messages to a message that also has a public narrative
+    (the server collapses them into one private frame) — send them separately.
+    Malformed private_messages JSON is rejected with an error, not silently dropped.
+    """
+    import json as _json
+    from .party.server import get_server_instance
+
+    server = get_server_instance()
+    if server is None:
+        return "Party Mode is not running."
+
+    private: dict = {}
+    if private_messages:
+        try:
+            private = _json.loads(private_messages)
+        except _json.JSONDecodeError as exc:
+            return f"Not sent: private_messages is not valid JSON ({exc})."
+        if not isinstance(private, dict):
+            return "Not sent: private_messages must be a JSON object of {player_id: text}."
+
+    if not narrative.strip() and not private:
+        return "Not sent: provide a narrative and/or private_messages."
+
+    response_id = server.response_queue.push({
+        "action_id": None,
+        "narrative": narrative,
+        "private": private,
+        "dm_only": dm_notes or "",
+    })
+
+    if narrative.strip():
+        _party_tts_speak(narrative, server)
+
+    return f"Pushed to connected players (response_id: {response_id}, no action_id)."
+
+
+@mcp.tool
 def party_thinking(
     message: Annotated[str | None, Field(description="Short message shown to players, e.g. 'The Dungeon Master consults the ancient scrolls…'")] = None,
 ) -> str:
