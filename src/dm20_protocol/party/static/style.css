@@ -457,6 +457,11 @@ body {
 /* Private Messages Section */
 .private-section {
     margin-bottom: 10px;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--bg-page);
+    padding-bottom: 6px;
 }
 
 .private-section__toggle {
@@ -504,7 +509,62 @@ body {
 }
 
 .private-section__messages--expanded {
-    max-height: 2000px;
+    max-height: 40vh;
+    overflow-y: auto;
+}
+
+/* fix 12: Session log panel — system messages, muted, collapsed by default */
+.system-section { margin-bottom: 10px; }
+.system-section__toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    min-height: var(--tap-target);
+    width: 100%;
+    text-align: left;
+    font-family: var(--font-body);
+}
+.system-section__toggle-arrow {
+    transition: transform var(--transition-fast);
+    font-size: 0.65rem;
+}
+.system-section__toggle-arrow--expanded { transform: rotate(90deg); }
+.system-section__count {
+    background: var(--text-muted);
+    color: var(--bg-page);
+    font-size: 0.6rem;
+    padding: 1px 7px;
+    border-radius: 10px;
+    margin-left: auto;
+    font-weight: 700;
+}
+.system-section__messages {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height var(--transition-slow);
+}
+.system-section__messages--expanded {
+    max-height: 30vh;
+    overflow-y: auto;
+}
+
+/* Brief highlight on a newly-arrived DM whisper in the private panel */
+.message--private-new {
+    animation: private-flash 2s ease-out;
+}
+
+@keyframes private-flash {
+    0% { background: var(--accent-gold-dim); box-shadow: 0 0 0 2px var(--border-gold); }
+    100% { background: transparent; box-shadow: none; }
 }
 
 
@@ -1527,3 +1587,76 @@ body {
     .tab-bar__icon { font-size: 1.4rem; }
     .tab-bar__label { font-size: 0.68rem; }
 }
+
+/* fix 8: click-to-expand full details on spells and inventory items */
+.spell-entry--expandable,
+.inventory-item--expandable { cursor: pointer; flex-wrap: wrap; }
+.spell-entry--expandable .spell-entry__name::after,
+.inventory-item--expandable .inventory-item__name::after {
+    content: ' \25B8';
+    color: var(--text-muted);
+    font-size: 0.8em;
+}
+.spell-entry--expanded .spell-entry__name::after,
+.inventory-item--expanded .inventory-item__name::after { content: ' \25BE'; }
+.spell-entry__detail,
+.inventory-item__detail {
+    display: none;
+    width: 100%;
+    flex-basis: 100%;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-color);
+    font-size: 0.82rem;
+    line-height: 1.45;
+    color: var(--text-secondary);
+    cursor: default;
+}
+.spell-entry--expanded .spell-entry__detail,
+.inventory-item--expanded .inventory-item__detail { display: block; }
+.spell-entry__meta-line,
+.inventory-item__meta-line { color: var(--text-muted); margin-bottom: 4px; }
+.spell-entry__desc,
+.inventory-item__desc { white-space: pre-wrap; }
+.equip-slot--expandable { cursor: pointer; flex-wrap: wrap; }
+.equip-slot--expandable .equip-slot__item::after {
+    content: ' \25B8';
+    color: var(--text-muted);
+    font-size: 0.8em;
+}
+.equip-slot--expanded .equip-slot__item::after { content: ' \25BE'; }
+.equip-slot__detail {
+    display: none;
+    width: 100%;
+    flex-basis: 100%;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-color);
+    font-size: 0.82rem;
+    line-height: 1.45;
+    color: var(--text-secondary);
+    cursor: default;
+}
+.equip-slot--expanded .equip-slot__detail { display: block; }
+.equip-slot__meta-line { color: var(--text-muted); margin-bottom: 4px; }
+.equip-slot__desc { white-space: pre-wrap; }
+
+/* fix 17: feed pagination toggle */
+.feed-toggle {
+    display: block;
+    width: 100%;
+    margin: 0 0 10px;
+    padding: 8px 12px;
+    background: var(--bg-card);
+    color: var(--accent-gold);
+    border: 1px solid var(--border-gold);
+    border-radius: var(--radius-md);
+    font-family: var(--font-body);
+    font-size: 0.85em;
+    text-align: center;
+    cursor: pointer;
+}
+.feed-toggle:hover {
+    background: var(--accent-gold-dim);
+}
+

@@ -317,7 +317,11 @@ class ConnectionManager:
         )
 
         for resp in missed:
+            # fix 14: replayed private messages must keep their type
             msg = {"type": "narrative", **resp}
+            if "private" in resp:
+                msg["type"] = "private"
+                msg["from"] = "DM"
             await self.send_to_player(player_id, msg)
 
         if missed:
@@ -809,6 +813,18 @@ This page is for the DM to verify the server is running.</p></body></html>"""
 
         return None
 
+    def _display_name(self, player_id: str) -> str:
+        """Resolve a player_id/token to its character name, falling back to the token."""
+        if player_id == "OBSERVER":
+            return player_id
+        try:
+            char = self.storage.get_character(player_id)
+            if char:
+                return char.name
+        except Exception:
+            pass
+        return player_id
+
     async def websocket_endpoint(self, websocket: WebSocket) -> None:
         """
         Handle WebSocket connections for real-time updates.
@@ -837,7 +853,7 @@ This page is for the DM to verify the server is running.</p></body></html>"""
         # Broadcast join event to all other players
         await self.connection_manager.broadcast({
             "type": "system",
-            "content": f"{player_id} joined",
+            "content": f"{self._display_name(player_id)} joined",
             "timestamp": datetime.now().isoformat(),
         })
 
@@ -870,7 +886,7 @@ This page is for the DM to verify the server is running.</p></body></html>"""
             # Broadcast leave event
             await self.connection_manager.broadcast({
                 "type": "system",
-                "content": f"{player_id} disconnected",
+                "content": f"{self._display_name(player_id)} disconnected",
                 "timestamp": datetime.now().isoformat(),
             })
 

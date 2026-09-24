@@ -494,7 +494,10 @@ class SessionNote(BaseModel):
     quest_updates: dict[str, str] = Field(default_factory=dict)
     combat_encounters: list[str] = Field(default_factory=list)
     experience_gained: int | None = None
-    treasure_found: list[str] = Field(default_factory=list, alias="loot_found")
+    # fix 18: dropped the mismatched alias="loot_found" — the tool layer
+    # constructs this model using the field name, not the alias, so the
+    # alias caused every treasure_found value to be silently discarded.
+    treasure_found: list[str] = Field(default_factory=list)
     notes: str = ""
 
 

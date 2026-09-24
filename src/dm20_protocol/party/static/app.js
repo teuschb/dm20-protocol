@@ -16,7 +16,8 @@
     var TOKEN = config.token || '';
     var PLAYER_ID = config.playerId || '';
     var PLAYER_NAME = config.playerName || PLAYER_ID;
-    var WS_URL = 'ws://' + window.location.host + '/ws?token=' + TOKEN;
+    var WS_PROTOCOL = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
+    var WS_URL = WS_PROTOCOL + '//' + window.location.host + '/ws?token=' + TOKEN;
     const API_BASE = window.location.origin;
 
     // Reconnect settings
@@ -30,10 +31,21 @@
     let reconnectTimer = null;
     let heartbeatTimer = null;
     let lastSeenTimestamp = null;
+    let historyRequested = false;
+    var renderedMsgIds = {};
     let isConnected = false;
     let pendingActionId = null;
     let privateMessagesExpanded = false;
     let privateMessageCount = 0;
+    let systemMessagesExpanded = false;
+    let systemMessageCount = 0;
+    let lastSystemText = null;
+    let connectedAnnounced = false;
+    // fix 17: feed pagination state
+    var FEED_VISIBLE_COUNT = 10;
+    var feedMessageEls = [];
+    var feedShowAll = false;
+    var feedToggleEl = null;
     let isPrivateMode = false;
     let activeTab = 'game';
     let cachedCharacterData = null;
@@ -56,6 +68,10 @@
         privateMessages: $('.private-section__messages'),
         privateCount: $('.private-section__count'),
         privateArrow: $('.private-section__toggle-arrow'),
+        systemToggle: $('.system-section__toggle'),
+        systemMessages: $('.system-section__messages'),
+        systemCount: $('.system-section__count'),
+        systemArrow: $('.system-section__toggle-arrow'),
         actionInput: $('.action-bar__input'),
         actionSend: $('.action-bar__send'),
         actionStatus: $('.action-bar__status'),
@@ -124,12 +140,18 @@
             updateConnectionStatus('connected');
             startHeartbeat();
 
-            if (lastSeenTimestamp) {
-                ws.send(JSON.stringify({
-                    type: 'history_request',
-                    since: lastSeenTimestamp,
-                }));
-            }
+            // fix 11: request history on EVERY (re)connect, not once per page.
+            // First load: lastSeenTimestamp is null -> since:'' -> the server
+            // returns the full backlog. Reconnect: since = the last narrative
+            // actually rendered -> the server returns only what was missed while
+            // the socket was down. renderedMsgIds dedups any boundary overlap.
+            // (The old once-per-page gate meant a phone that slept through a DM
+            // post and then auto-reconnected never received it.)
+            historyRequested = true;
+            ws.send(JSON.stringify({
+                type: 'history_request',
+                since: lastSeenTimestamp || '',
+            }));
         };
 
         ws.onmessage = function (event) {
@@ -191,13 +213,25 @@
     // ===== Message Handler =====
 
     function handleMessage(msg) {
-        if (msg.timestamp) {
-            lastSeenTimestamp = msg.timestamp;
+        // fix 11: only advance lastSeenTimestamp on real feed content, and only
+        // ever forward. system/connected messages carry a local-time clock that
+        // sorts BEFORE the server's UTC '...Z' response timestamps, so tracking
+        // them would rewind the cursor and make the reconnect history_request
+        // replay a chunk of feed the player already has.
+        if (msg.timestamp && (msg.type === 'narrative' || msg.type === 'private')) {
+            if (!lastSeenTimestamp || msg.timestamp > lastSeenTimestamp) {
+                lastSeenTimestamp = msg.timestamp;
+            }
         }
 
         switch (msg.type) {
             case 'connected':
-                addSystemMessage('Connected as ' + PLAYER_NAME);
+                // fix 12: the socket reconnects constantly on mobile; only
+                // announce the connection once per page load.
+                if (!connectedAnnounced) {
+                    connectedAnnounced = true;
+                    addSystemMessage('Connected as ' + PLAYER_NAME);
+                }
                 fetchCharacter();
                 break;
 
@@ -210,6 +244,12 @@
                 break;
 
             case 'private':
+                // fix 15: server collapses narrative+private resolves into a
+                // single 'private' frame and never sends the narrative
+                // separately — render it here too (dedups on id, skips blank).
+                if (((msg.narrative || '') + '').trim()) {
+                    addNarrativeMessage(msg);
+                }
                 addPrivateMessage(msg);
                 break;
 
@@ -270,31 +310,31 @@
         return el;
     }
 
-    function appendToFeed(el) {
-        if (!dom.narrativeFeed) return;
-        dom.narrativeFeed.appendChild(el);
-        dom.narrativeFeed.scrollTop = dom.narrativeFeed.scrollHeight;
+    // True if the feed is scrolled at (or near) the bottom. Used so incoming
+    // messages only auto-scroll when the player hasn't deliberately scrolled up
+    // to read something — otherwise other players' activity yanks them down.
+    function isFeedNearBottom() {
+        var f = dom.narrativeFeed;
+        if (!f) return true;
+        return f.scrollHeight - f.scrollTop - f.clientHeight < 120;
     }
 
-    // Typing effect: reveal text word-by-word, apply markdown at the end
+    function appendToFeed(el) {
+        if (!dom.narrativeFeed) return;
+        var stick = isFeedNearBottom();
+        dom.narrativeFeed.appendChild(el);
+        if (stick) dom.narrativeFeed.scrollTop = dom.narrativeFeed.scrollHeight;
+    }
+
+    // fix 16: render narrative text instantly. The old word-by-word
+    // typewriter effect made every reload jarring — a full backlog replay
+    // started 30+ simultaneous typing animations. Text just appears now.
     function typeTextInto(contentEl, text) {
-        var words = text.split(' ');
-        var i = 0;
-        var interval = setInterval(function () {
-            if (i >= words.length) {
-                clearInterval(interval);
-                contentEl.innerHTML = renderMarkdown(text);
-                if (dom.narrativeFeed) {
-                    dom.narrativeFeed.scrollTop = dom.narrativeFeed.scrollHeight;
-                }
-                return;
-            }
-            contentEl.textContent = words.slice(0, i + 1).join(' ');
-            if (dom.narrativeFeed) {
-                dom.narrativeFeed.scrollTop = dom.narrativeFeed.scrollHeight;
-            }
-            i++;
-        }, 28);  // ~35 words/sec — fast enough to feel live, slow enough to read
+        var stick = isFeedNearBottom();
+        contentEl.innerHTML = renderMarkdown(text);
+        if (stick && dom.narrativeFeed) {
+            dom.narrativeFeed.scrollTop = dom.narrativeFeed.scrollHeight;
+        }
     }
 
     // Thinking indicator: shown while DM is processing, hidden when narrative arrives
@@ -322,7 +362,57 @@
         thinkingEl = null;
     }
 
+    // fix 17: feed pagination helpers.
+    function ensureFeedToggle() {
+        if (feedToggleEl || !dom.narrativeFeed) return;
+        feedToggleEl = document.createElement('button');
+        feedToggleEl.type = 'button';
+        feedToggleEl.className = 'feed-toggle';
+        feedToggleEl.addEventListener('click', function () {
+            feedShowAll = !feedShowAll;
+            updateFeedVisibility();
+        });
+        dom.narrativeFeed.insertBefore(feedToggleEl, dom.narrativeFeed.firstChild);
+    }
+
+    function updateFeedVisibility() {
+        if (!dom.narrativeFeed) return;
+        var total = feedMessageEls.length;
+        var hiddenCount = feedShowAll ? 0 : Math.max(0, total - FEED_VISIBLE_COUNT);
+        var stick = isFeedNearBottom();
+        for (var i = 0; i < total; i++) {
+            feedMessageEls[i].hidden = i < hiddenCount;
+        }
+        if (hiddenCount > 0) {
+            ensureFeedToggle();
+            feedToggleEl.hidden = false;
+            feedToggleEl.textContent = 'Show ' + hiddenCount + ' earlier message' + (hiddenCount === 1 ? '' : 's');
+        } else if (feedToggleEl) {
+            if (feedShowAll && total > FEED_VISIBLE_COUNT) {
+                feedToggleEl.hidden = false;
+                feedToggleEl.textContent = 'Show recent only';
+            } else {
+                feedToggleEl.hidden = true;
+            }
+        }
+        if (stick && dom.narrativeFeed) {
+            dom.narrativeFeed.scrollTop = dom.narrativeFeed.scrollHeight;
+        }
+    }
+
+    function registerFeedMessage(el) {
+        feedMessageEls.push(el);
+        updateFeedVisibility();
+    }
+
     function addNarrativeMessage(msg) {
+        // fix 13: a resolve whose only purpose was a private_messages reply
+        // comes through with a blank narrative — don't render an empty bubble.
+        if (!((msg.content || msg.narrative || '').trim())) return;
+        if (msg.id) {
+            if (renderedMsgIds[msg.id]) return;
+            renderedMsgIds[msg.id] = true;
+        }
         hideThinkingIndicator();  // remove "DM is thinking" bubble if present
         var text = msg.content || msg.narrative || '';
         var el = document.createElement('div');
@@ -340,6 +430,7 @@
         el.appendChild(headerEl);
         el.appendChild(contentEl);
         appendToFeed(el);
+        registerFeedMessage(el);  // fix 17: feed pagination
 
         // Reveal text word-by-word for a live, streaming feel
         typeTextInto(contentEl, text);
@@ -363,21 +454,40 @@
         }
 
         if (dom.privateMessages) {
-            dom.privateMessages.appendChild(makePrivateEl());
+            var panelEl = makePrivateEl();
+            panelEl.classList.add('message--private-new');
+            dom.privateMessages.appendChild(panelEl);
             privateMessageCount++;
             if (dom.privateCount) {
                 dom.privateCount.textContent = privateMessageCount;
             }
+            // Auto-expand the (pinned) Private Messages panel so the newest DM
+            // reply is always visible and can't be pushed off-screen by other
+            // players' activity in the shared feed below.
+            expandPrivateMessages();
+            panelEl.scrollIntoView({ block: 'nearest' });
+            setTimeout(function () {
+                panelEl.classList.remove('message--private-new');
+            }, 2000);
         }
 
-        appendToFeed(makePrivateEl());
+        // fix 12: private messages live only in the pinned DM panel now —
+        // the main feed carries party-wide narration only.
     }
 
     function addSystemMessage(content) {
+        // fix 12: route to the Session-log panel, not the narrative feed;
+        // collapse consecutive duplicates (mobile reconnect churn).
+        if (content === lastSystemText) return;
+        lastSystemText = content;
+        var host = dom.systemMessages || dom.narrativeFeed;
+        if (!host) return;
         var el = document.createElement('div');
         el.className = 'message message--system';
         el.innerHTML = '<div class="message__content">' + escapeHtml(content) + '</div>';
-        appendToFeed(el);
+        host.appendChild(el);
+        systemMessageCount++;
+        if (dom.systemCount) dom.systemCount.textContent = systemMessageCount;
     }
 
     function addCombatMessage(content, timestamp) {
@@ -437,12 +547,8 @@
                     input.value = '';
                     setActionStatus(sendingPrivate ? 'Whisper sent' : 'Action sent', 'queued');
 
-                    // Reset private mode after send
-                    if (sendingPrivate) {
-                        isPrivateMode = false;
-                        if (dom.privateBtn) dom.privateBtn.classList.remove('action-bar__private-toggle--active');
-                        if (dom.actionInput) dom.actionInput.placeholder = 'What do you do?';
-                    }
+                    // Whisper mode now stays toggled until the player explicitly untoggles it
+                    // (previously reset to public after every send)
 
                     // Clear "sent" status after 3s if not yet processing
                     setTimeout(function () {
@@ -715,7 +821,9 @@
         dom.featuresList.innerHTML = '';
 
         var features = data.features || [];
-        var legacyFeatures = data.features_and_traits || [];
+        // features_and_traits is a legacy mirror of features — only fall back to
+        // it when the structured features list is empty, otherwise every entry doubles.
+        var legacyFeatures = features.length ? [] : (data.features_and_traits || []);
 
         features.forEach(function (f) {
             var li = document.createElement('li');
@@ -895,7 +1003,23 @@
                 }
                 tagsHtml += '</div>';
 
-                entry.innerHTML = '<div>' + nameHtml + '</div>' + tagsHtml;
+                var spellDetailHtml = '';
+                if (typeof spell === 'object') {
+                    var sb = [];
+                    if (spell.casting_time) sb.push('<b>Cast:</b> ' + escapeHtml(spell.casting_time));
+                    if (spell.range !== undefined && spell.range !== null && spell.range !== '') sb.push('<b>Range:</b> ' + escapeHtml(String(spell.range)) + (typeof spell.range === 'number' ? ' ft' : ''));
+                    if (spell.duration) sb.push('<b>Duration:</b> ' + escapeHtml(spell.duration));
+                    if (spell.components && spell.components.length) sb.push('<b>Components:</b> ' + escapeHtml(spell.components.join(', ')) + (spell.material_components ? ' (' + escapeHtml(spell.material_components) + ')' : ''));
+                    if (sb.length || spell.description) {
+                        spellDetailHtml = '<div class="spell-entry__detail">' +
+                            (sb.length ? '<div class="spell-entry__meta-line">' + sb.join(' &nbsp;&middot;&nbsp; ') + '</div>' : '') +
+                            (spell.description ? '<div class="spell-entry__desc">' + escapeHtml(spell.description) + '</div>' : '') +
+                            '</div>';
+                        entry.classList.add('spell-entry--expandable');
+                        entry.addEventListener('click', function () { entry.classList.toggle('spell-entry--expanded'); });
+                    }
+                }
+                entry.innerHTML = '<div>' + nameHtml + '</div>' + tagsHtml + spellDetailHtml;
                 group.appendChild(entry);
             });
 
@@ -909,8 +1033,8 @@
 
         var equipment = data.equipment || {};
         var slotDefs = [
-            { key: 'main_hand', label: 'Main Hand' },
-            { key: 'off_hand', label: 'Off Hand' },
+            { key: 'weapon_main', label: 'Main Hand' },
+            { key: 'weapon_off', label: 'Off Hand' },
             { key: 'armor', label: 'Armor' },
             { key: 'shield', label: 'Shield' },
         ];
@@ -928,10 +1052,28 @@
                 itemName = typeof item === 'string' ? item : item.name || item;
             }
 
+            var equipDetailHtml = '';
+            if (item && typeof item === 'object' && (item.description || item.value || (item.properties && Object.keys(item.properties).length))) {
+                var eb = [];
+                if (item.value) eb.push('<b>Value:</b> ' + escapeHtml(String(item.value)));
+                if (item.weight) eb.push('<b>Weight:</b> ' + escapeHtml(String(item.weight)) + ' lb');
+                if (item.properties) {
+                    Object.keys(item.properties).forEach(function (k) {
+                        eb.push('<b>' + escapeHtml(k) + ':</b> ' + escapeHtml(String(item.properties[k])));
+                    });
+                }
+                equipDetailHtml = '<div class="equip-slot__detail">' +
+                    (eb.length ? '<div class="equip-slot__meta-line">' + eb.join(' &nbsp;&middot;&nbsp; ') + '</div>' : '') +
+                    (item.description ? '<div class="equip-slot__desc">' + escapeHtml(item.description) + '</div>' : '') +
+                    '</div>';
+                el.classList.add('equip-slot--expandable');
+                el.addEventListener('click', function () { el.classList.toggle('equip-slot--expanded'); });
+            }
+
             el.innerHTML =
                 '<span class="equip-slot__label">' + slot.label + '</span>' +
                 '<span class="equip-slot__item' + (!itemName ? ' equip-slot__item--empty' : '') + '">' +
-                (itemName ? escapeHtml(itemName) : 'Empty') + '</span>';
+                (itemName ? escapeHtml(itemName) : 'Empty') + '</span>' + equipDetailHtml;
             dom.equipmentSlots.appendChild(el);
         });
 
@@ -985,6 +1127,24 @@
             if (qty) html += '<span class="inventory-item__qty">' + qty + '</span>';
             if (weight) html += '<span class="inventory-item__weight">' + weight + '</span>';
             html += '</div>';
+
+            if (isObj && (item.description || item.value || (item.properties && Object.keys(item.properties).length))) {
+                var ib = [];
+                if (item.value) ib.push('<b>Value:</b> ' + escapeHtml(String(item.value)));
+                var itype = item.item_type || item.type;
+                if (itype) ib.push('<b>Type:</b> ' + escapeHtml(itype));
+                if (item.properties) {
+                    Object.keys(item.properties).forEach(function (k) {
+                        ib.push('<b>' + escapeHtml(k) + ':</b> ' + escapeHtml(String(item.properties[k])));
+                    });
+                }
+                html += '<div class="inventory-item__detail">' +
+                    (ib.length ? '<div class="inventory-item__meta-line">' + ib.join(' &nbsp;&middot;&nbsp; ') + '</div>' : '') +
+                    (item.description ? '<div class="inventory-item__desc">' + escapeHtml(item.description) + '</div>' : '') +
+                    '</div>';
+                li.classList.add('inventory-item--expandable');
+                li.addEventListener('click', function () { li.classList.toggle('inventory-item--expanded'); });
+            }
 
             li.innerHTML = html;
             dom.inventoryList.appendChild(li);
@@ -1573,14 +1733,37 @@
 
     // ===== Private Messages Toggle =====
 
-    function togglePrivateMessages() {
-        privateMessagesExpanded = !privateMessagesExpanded;
+    function setPrivateMessagesExpanded(expanded) {
+        privateMessagesExpanded = expanded;
         if (dom.privateMessages) {
-            dom.privateMessages.classList.toggle('private-section__messages--expanded', privateMessagesExpanded);
+            dom.privateMessages.classList.toggle('private-section__messages--expanded', expanded);
         }
         if (dom.privateArrow) {
-            dom.privateArrow.classList.toggle('private-section__toggle-arrow--expanded', privateMessagesExpanded);
+            dom.privateArrow.classList.toggle('private-section__toggle-arrow--expanded', expanded);
         }
+    }
+
+    function expandPrivateMessages() {
+        if (!privateMessagesExpanded) setPrivateMessagesExpanded(true);
+    }
+
+    function togglePrivateMessages() {
+        setPrivateMessagesExpanded(!privateMessagesExpanded);
+    }
+
+    // fix 12: Session-log panel expand/collapse
+    function setSystemMessagesExpanded(expanded) {
+        systemMessagesExpanded = expanded;
+        if (dom.systemMessages) {
+            dom.systemMessages.classList.toggle('system-section__messages--expanded', expanded);
+        }
+        if (dom.systemArrow) {
+            dom.systemArrow.classList.toggle('system-section__toggle-arrow--expanded', expanded);
+        }
+    }
+
+    function toggleSystemMessages() {
+        setSystemMessagesExpanded(!systemMessagesExpanded);
     }
 
 
@@ -1605,6 +1788,11 @@
         // Private messages toggle (section at the top)
         if (dom.privateToggle) {
             dom.privateToggle.addEventListener('click', togglePrivateMessages);
+        }
+
+        // fix 12: Session-log toggle
+        if (dom.systemToggle) {
+            dom.systemToggle.addEventListener('click', toggleSystemMessages);
         }
 
         // Private mode button (🤫) — toggle DM-only message mode
