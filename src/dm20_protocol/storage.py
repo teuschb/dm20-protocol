@@ -1060,6 +1060,16 @@ class DnDStorage:
         new_name = kwargs.get("name")
         new_player_name = kwargs.get("player_name")
 
+        # Back-compat: Character no longer has a flat `level` field (classes[] holds it),
+        # so a `level=` kwarg used to be silently dropped. Apply it to the primary class.
+        if "level" in kwargs and not hasattr(character, "level"):
+            new_level = kwargs.pop("level")
+            if len(character.classes) > 1:
+                logger.warning(
+                    f"update_character(level=) on multiclass '{original_name}': applying to primary class only"
+                )
+            character.character_class.level = new_level
+
         for key, value in kwargs.items():
             if hasattr(character, key):
                 logger.debug(f"📝 Updating character '{original_name}': {key} -> {value}")
@@ -1077,7 +1087,7 @@ class DnDStorage:
                 self._player_name_index[character.player_name.lower()] = new_name
 
         # Update player name index if player_name changed
-        if new_player_name != original_player_name:
+        if "player_name" in kwargs and new_player_name != original_player_name:
             # Remove old player name from index
             if original_player_name:
                 self._player_name_index.pop(original_player_name.lower(), None)

@@ -134,7 +134,7 @@ class TestKokoroEngine:
             return_value=True,
         ):
             engine = KokoroEngine()
-            engine._pipeline = mock_pipeline
+            engine._pipelines["a"] = mock_pipeline  # Kokoro lang_code "a" = American English
 
             result = await engine.synthesize("Hello world")
 
@@ -161,7 +161,7 @@ class TestKokoroEngine:
             return_value=True,
         ):
             engine = KokoroEngine()
-            engine._pipeline = mock_pipeline
+            engine._pipelines["a"] = mock_pipeline  # Kokoro lang_code "a" = American English
 
             config = VoiceConfig(language="it", speed=1.2)
             result = await engine.synthesize("Ciao mondo", config)
@@ -174,10 +174,10 @@ class TestKokoroEngine:
         from dm20_protocol.voice.engines.kokoro import KokoroEngine
 
         engine = KokoroEngine()
-        engine._pipeline = MagicMock()
+        engine._pipelines["a"] = MagicMock()
 
         await engine.shutdown()
-        assert engine._pipeline is None
+        assert engine._pipelines == {}
 
     def test_supported_languages(self) -> None:
         from dm20_protocol.voice.engines.kokoro import KokoroEngine
@@ -185,7 +185,7 @@ class TestKokoroEngine:
         engine = KokoroEngine()
         langs = engine.supported_languages()
         assert "en" in langs
-        assert "it" in langs
+        assert "it" not in langs  # Kokoro mapping is English-only here
 
 
 # ---------------------------------------------------------------------------

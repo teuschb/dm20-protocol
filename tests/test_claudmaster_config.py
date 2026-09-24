@@ -269,7 +269,10 @@ class TestConfigSerialization:
             "improvisation_level", "allow_level_change_mid_session",
             "agent_timeout", "narrative_style",
             "dialogue_style", "difficulty", "fudge_rolls", "house_rules",
-            "ambiguity_threshold", "intent_weight_overrides", "fallback_confidence"
+            "ambiguity_threshold", "intent_weight_overrides", "fallback_confidence",
+            "model_profile", "effort",
+            "narrator_model", "narrator_max_tokens", "narrator_temperature", "narrator_effort",
+            "arbiter_model", "arbiter_max_tokens", "arbiter_temperature", "arbiter_effort",
         }
         assert set(dumped.keys()) == expected_fields
 

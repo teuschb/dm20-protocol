@@ -46,8 +46,10 @@ logger = logging.getLogger("dm20-protocol")
 # API Configuration
 SRD_API_BASE = "https://www.dnd5eapi.co/api"
 DEFAULT_TIMEOUT = 30.0
-MAX_RETRIES = 3
+MAX_RETRIES = 6
 RETRY_BACKOFF = 2.0
+# The public API rate-limits (HTTP 429) large parallel bursts; cap in-flight requests.
+MAX_CONCURRENT_REQUESTS = 4
 
 
 class SRDSourceError(Exception):
@@ -88,6 +90,7 @@ class SRDSource(RulebookSourceBase):
         self.version = version
         self.cache_dir = cache_dir or Path("dnd_data/rulebook_cache") / f"srd_{version}"
         self._client: httpx.AsyncClient | None = None
+        self._request_sem: asyncio.Semaphore | None = None
 
         # Content storage
         self._classes: dict[str, ClassDefinition] = {}
@@ -106,6 +109,7 @@ class SRDSource(RulebookSourceBase):
 
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             self._client = client
+            self._request_sem = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
             try:
                 # Load content in batches to manage concurrency
@@ -119,6 +123,7 @@ class SRDSource(RulebookSourceBase):
 
             finally:
                 self._client = None
+                self._request_sem = None
 
         self._loaded = True
         self.loaded_at = datetime.now()
@@ -164,12 +169,21 @@ class SRDSource(RulebookSourceBase):
 
         for attempt in range(MAX_RETRIES):
             try:
-                response = await self._client.get(url)
+                if self._request_sem is not None:
+                    async with self._request_sem:
+                        response = await self._client.get(url)
+                else:
+                    response = await self._client.get(url)
 
                 if response.status_code == 429:
-                    # Rate limited
-                    wait = RETRY_BACKOFF ** attempt
+                    # Rate limited: honor Retry-After when given, else back off
+                    try:
+                        wait = float(response.headers.get("Retry-After", ""))
+                    except ValueError:
+                        wait = RETRY_BACKOFF ** attempt
+                    wait = min(wait, 30.0)
                     logger.warning(f"Rate limited, waiting {wait}s")
+                    last_error = RuntimeError("rate limited (HTTP 429)")
                     await asyncio.sleep(wait)
                     continue
 
@@ -468,6 +482,11 @@ class SRDSource(RulebookSourceBase):
         # Map components
         components = data.get("components", [])
 
+        # The API returns `damage` as a dict on some spells and a list on others
+        damage = data.get("damage") or {}
+        if isinstance(damage, list):
+            damage = damage[0] if damage else {}
+
         return SpellDefinition(
             index=data["index"],
             name=data["name"],
@@ -484,7 +503,7 @@ class SRDSource(RulebookSourceBase):
             higher_level=data.get("higher_level"),
             classes=[c["index"] for c in data.get("classes", [])],
             subclasses=[s["index"] for s in data.get("subclasses", [])],
-            damage_type=data.get("damage", {}).get("damage_type", {}).get("name"),
+            damage_type=(damage.get("damage_type") or {}).get("name"),
             source=self.source_id,
         )
 
@@ -546,7 +565,7 @@ class SRDSource(RulebookSourceBase):
             armor_class=armor_class,
             hit_points=data.get("hit_points", 1),
             hit_dice=data.get("hit_dice", "1d8"),
-            speed=data.get("speed", {}),
+            speed={k: str(v) for k, v in (data.get("speed") or {}).items()},
             strength=data.get("strength", 10),
             dexterity=data.get("dexterity", 10),
             constitution=data.get("constitution", 10),
@@ -558,7 +577,7 @@ class SRDSource(RulebookSourceBase):
             damage_resistances=data.get("damage_resistances", []),
             damage_immunities=data.get("damage_immunities", []),
             condition_immunities=[c.get("name", "") for c in data.get("condition_immunities", [])],
-            senses=data.get("senses", {}),
+            senses={k: str(v) for k, v in (data.get("senses") or {}).items()},
             languages=data.get("languages", ""),
             challenge_rating=data.get("challenge_rating", 0),
             xp=data.get("xp", 0),

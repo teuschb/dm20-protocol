@@ -258,7 +258,10 @@ def _summarize_field(field_name: str, char: Character) -> str:
             r = char.race
             return f"{r.subrace + ' ' if r.subrace else ''}{r.name}"
         elif field_name == "classes":
-            return char.class_string()
+            return " / ".join(
+                f"{c.name} {c.level}" + (f" ({c.subclass})" if c.subclass else "")
+                for c in char.classes
+            )
         elif field_name == "background":
             return char.background or "None"
         elif field_name == "alignment":

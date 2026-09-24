@@ -497,7 +497,7 @@ class TestFormatImportSummary:
         )
         result = ImportResult(
             character=char,
-            mapped_fields=["name", "classes"],
+            mapped_fields=["name", "classes", "race", "hit_points_current", "armor_class"],
             unmapped_fields=[],
             warnings=[],
             source="url",
@@ -508,8 +508,7 @@ class TestFormatImportSummary:
         assert "Fighter 5" in summary
         assert "Champion" in summary
         assert "Human" in summary
-        assert "45/45" in summary
-        assert "AC: 18" in summary
+        assert "Combat: 45/45, 18" in summary  # report format: HP, then AC
 
     def test_multiclass_summary(self):
         """Format summary for multiclass character."""

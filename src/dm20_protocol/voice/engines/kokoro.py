@@ -19,12 +19,13 @@ from .base import AudioFormat, TTSEngine, TTSResult, VoiceConfig
 logger = logging.getLogger("dm20-protocol.voice.kokoro")
 
 # Map language codes to Kokoro language identifiers
-# Kokoro only supports: "a" (American English), "b" (British English),
-# "j" (Japanese), "z" (Chinese). Italian is NOT supported.
+# Values are Kokoro KPipeline lang_codes: "a" (American English), "b" (British
+# English). Only English is mapped here. (Previously the code took the first
+# letter of "en-us" -> "e", which is Kokoro's *Spanish* pipeline.)
 _LANGUAGE_MAP: dict[str, str] = {
-    "en": "en-us",
-    "en-us": "en-us",
-    "en-gb": "en-gb",
+    "en": "a",
+    "en-us": "a",
+    "en-gb": "b",
 }
 
 # Default voice IDs per language
@@ -147,14 +148,13 @@ class KokoroEngine(TTSEngine):
 
         config = voice_config or VoiceConfig()
         lang = config.language
-        kokoro_lang = _LANGUAGE_MAP.get(lang, "en-us")
+        kokoro_lang = _LANGUAGE_MAP.get(lang, "a")
         voice_id = config.voice_id
         if voice_id == "default":
             voice_id = _DEFAULT_VOICES.get(lang, "af_heart")
 
         try:
-            # Kokoro lang_code is the first letter of the language identifier
-            pipeline = self._get_pipeline(kokoro_lang[0])
+            pipeline = self._get_pipeline(kokoro_lang)
 
             start_time = time.monotonic()
 
@@ -205,4 +205,4 @@ class KokoroEngine(TTSEngine):
         logger.debug("Kokoro pipelines released")
 
     def supported_languages(self) -> list[str]:
-        return ["en"]
+        return list(_LANGUAGE_MAP)

@@ -202,7 +202,8 @@ class TestRegistryMutation:
     def test_set_archetype_default(self, tmp_path):
         reg = VoiceRegistry(tmp_path)
         reg.set_archetype_default("female_*", {"voice_id": "generic_female"})
-        cfg = reg.get_npc_voice("lady", gender="female", race="tiefling")
+        # race without its own built-in archetype (tiefling now has one), so female_* applies
+        cfg = reg.get_npc_voice("lady", gender="female", race="genasi")
         assert cfg.voice_id == "generic_female"
 
     def test_list_overrides(self, tmp_path):
