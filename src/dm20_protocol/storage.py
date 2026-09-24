@@ -331,6 +331,13 @@ class DnDStorage:
         """
         self._character_callbacks.append(callback)
 
+    def unregister_character_callback(self, callback) -> None:
+        """Remove a previously registered character callback (no-op if absent)."""
+        try:
+            self._character_callbacks.remove(callback)
+        except ValueError:
+            pass
+
     def _notify_character_callbacks(self, action: str, *args) -> None:
         """Fire all registered character callbacks, catching exceptions."""
         for cb in self._character_callbacks:

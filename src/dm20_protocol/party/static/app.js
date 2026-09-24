@@ -258,6 +258,11 @@
                 updateCharacterTabs(msg.data);
                 break;
 
+            case 'character_changed':
+                // live sheet update: server pinged; re-fetch through the checked route
+                scheduleCharacterRefresh(400);
+                break;
+
             case 'combat_state':
                 updateCombatState(msg.data);
                 break;
@@ -615,14 +620,57 @@
             .then(function (data) {
                 if (data) {
                     cachedCharacterData = data;
-                    updateCharacterBar(data);
-                    updateCharacterTabs(data);
+                    keepExpandedState(function () {
+                        updateCharacterBar(data);
+                        updateCharacterTabs(data);
+                    });
                 }
             })
             .catch(function (err) {
                 console.error('Failed to fetch character:', err);
             });
     }
+
+    // ----- live sheet updates -----
+    var EXPANDABLE = ['spell-entry', 'equip-slot', 'inventory-item'];
+    var characterRefreshTimer = null;
+
+    // Redrawing the sheet rebuilds every list; remember which detail rows the
+    // player had open (by index within their class) and re-open them after.
+    function keepExpandedState(redraw) {
+        var open = {};
+        EXPANDABLE.forEach(function (cls) {
+            var all = document.querySelectorAll('.' + cls);
+            open[cls] = [];
+            for (var i = 0; i < all.length; i++) {
+                if (all[i].classList.contains(cls + '--expanded')) open[cls].push(i);
+            }
+        });
+        redraw();
+        EXPANDABLE.forEach(function (cls) {
+            var all = document.querySelectorAll('.' + cls);
+            open[cls].forEach(function (i) {
+                if (all[i]) all[i].classList.add(cls + '--expanded');
+            });
+        });
+    }
+
+    function scheduleCharacterRefresh(delayMs) {
+        if (characterRefreshTimer) clearTimeout(characterRefreshTimer);
+        characterRefreshTimer = setTimeout(function () {
+            characterRefreshTimer = null;
+            fetchCharacter();
+        }, delayMs);
+    }
+
+    // Safety net for sockets phones put to sleep: refresh when the tab regains
+    // focus, and every 60s while it is visible.
+    document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) scheduleCharacterRefresh(200);
+    });
+    setInterval(function () {
+        if (!document.hidden) fetchCharacter();
+    }, 60000);
 
     function updateCharacterBar(data) {
         if (!data) return;

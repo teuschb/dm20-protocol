@@ -21,6 +21,8 @@ Routes:
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 import threading
 import time
@@ -423,6 +425,13 @@ class PartyServer:
             on_push=self._on_response_pushed,
         )
 
+        # Live sheet updates: ping clients when any character's data changes.
+        self._last_characters_hash = self._characters_hash()
+        self._char_callback = self._on_character_event
+        register = getattr(storage, "register_character_callback", None)
+        if callable(register):
+            register(self._char_callback)
+
         # Detect LAN IP for QR codes
         self.host_ip = detect_host_ip()
 
@@ -430,6 +439,48 @@ class PartyServer:
         self.app = self._build_app()
 
         logger.info(f"PartyServer initialized on {host}:{port}")
+
+    def _characters_hash(self) -> str:
+        """Stable hash of every character's data (empty string if none loaded)."""
+        try:
+            chars = self.storage.list_characters_detailed()
+            dumps = []
+            for c in chars:
+                d = c.model_dump(mode="json")
+                d.pop("updated_at", None)  # touched on every update; not content
+                dumps.append(d)
+            blob = json.dumps(dumps, sort_keys=True, default=str)
+            return hashlib.sha1(blob.encode("utf-8")).hexdigest()
+        except Exception as exc:  # never let a listener break a save
+            logger.debug("characters hash failed: %s", exc)
+            return ""
+
+    def _on_character_event(self, action: str, *args) -> None:
+        """Storage callback (runs in the saving thread).
+
+        Broadcasts a tiny ``character_changed`` ping when character data actually
+        changed. Clients re-fetch through the token-checked /character route, so
+        no sheet data travels over the websocket.
+        """
+        new_hash = self._characters_hash()
+        if action == "saved" and new_hash == self._last_characters_hash:
+            return
+        self._last_characters_hash = new_hash
+        if not self._loop or self._loop.is_closed():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.connection_manager.broadcast({"type": "character_changed"}),
+                self._loop,
+            )
+        except RuntimeError as exc:
+            logger.debug("character_changed broadcast failed: %s", exc)
+
+    def detach(self) -> None:
+        """Unhook from storage (called when the server stops)."""
+        unregister = getattr(self.storage, "unregister_character_callback", None)
+        if callable(unregister):
+            unregister(self._char_callback)
 
     def _on_response_pushed(self, response: dict) -> None:
         """
@@ -1102,6 +1153,9 @@ def stop_party_server() -> None:
         raise RuntimeError("Party server is not running")
 
     logger.info("Stopping Party Mode server...")
+
+    if _server_instance is not None:
+        _server_instance.detach()
 
     # Signal shutdown
     if _stop_event:
