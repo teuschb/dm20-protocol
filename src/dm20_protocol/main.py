@@ -612,6 +612,106 @@ _LIST_OPERATIONS = {
 _ABILITY_NAMES = {"strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"}
 
 
+def _parse_character_extras(
+    subclass: str | None,
+    spell_slots: str | None,
+    add_features: str | None,
+    remove_features: str | None,
+) -> tuple[dict, str | None]:
+    """Validate the class/slot/feature parameters of update_character.
+
+    Returns (parsed, error). Nothing may be mutated until this succeeds, so a
+    malformed value can never leave a half-applied update.
+    """
+    parsed: dict = {"subclass": subclass}
+
+    if spell_slots is not None:
+        try:
+            raw = json.loads(spell_slots)
+            if not isinstance(raw, dict):
+                raise ValueError("must be an object like {\"1\": 2, \"2\": 1}")
+            slots = {int(k): int(v) for k, v in raw.items()}
+            if any(k < 1 or k > 9 or v < 0 for k, v in slots.items()):
+                raise ValueError("levels must be 1-9 and counts >= 0")
+        except (ValueError, TypeError) as exc:
+            return {}, f"spell_slots is not valid ({exc}). Example: '{{\"1\": 2}}'."
+        parsed["spell_slots"] = slots
+
+    if add_features is not None:
+        try:
+            raw = json.loads(add_features)
+            if not isinstance(raw, list):
+                raise ValueError("must be a JSON list")
+            feats = []
+            for item in raw:
+                if isinstance(item, str):
+                    item = {"name": item}
+                if not isinstance(item, dict) or not str(item.get("name", "")).strip():
+                    raise ValueError("each feature needs a name")
+                feats.append(item)
+        except (ValueError, TypeError) as exc:
+            return {}, (
+                f"add_features is not valid ({exc}). Example: "
+                "'[{\"name\": \"Improved Critical\", \"source\": \"Fighter 3 (Champion)\", "
+                "\"description\": \"...\", \"level_gained\": 3}]'."
+            )
+        parsed["add_features"] = feats
+
+    if remove_features is not None:
+        parsed["remove_features"] = _parse_json_list(remove_features)
+
+    return parsed, None
+
+
+def _apply_character_extras(character: "Character", parsed: dict) -> list[str]:
+    """Apply validated subclass / spell-slot / structured-feature changes in place."""
+    from .models import Feature
+
+    messages: list[str] = []
+
+    if parsed.get("subclass") is not None:
+        if character.classes:
+            character.classes[0].subclass = parsed["subclass"] or None
+            messages.append(f"subclass: {parsed['subclass'] or '(cleared)'}")
+        else:
+            messages.append("⚠️ Cannot set subclass: character has no classes defined.")
+
+    if "spell_slots" in parsed:
+        slots = parsed["spell_slots"]
+        character.spell_slots = dict(slots)
+        # keep 'used' consistent: drop levels that no longer exist, clamp the rest
+        character.spell_slots_used = {
+            lvl: min(character.spell_slots_used.get(lvl, 0), n) for lvl, n in slots.items()
+        }
+        messages.append("spell slots: " + (", ".join(f"L{k}×{v}" for k, v in sorted(slots.items())) or "(none)"))
+
+    for item in parsed.get("add_features", []):
+        name = str(item["name"]).strip()
+        existing = next((f for f in character.features if f.name.lower() == name.lower()), None)
+        level = int(item.get("level_gained", 1) or 1)
+        if existing:
+            existing.source = str(item.get("source", existing.source))
+            existing.description = str(item.get("description", existing.description))
+            existing.level_gained = level if "level_gained" in item else existing.level_gained
+            messages.append(f"feature updated: {name}")
+        else:
+            character.features.append(Feature(
+                name=name,
+                source=str(item.get("source", "Manual")),
+                description=str(item.get("description", "")),
+                level_gained=level,
+            ))
+            messages.append(f"feature added: {name}")
+
+    for name in parsed.get("remove_features", []):
+        before = len(character.features)
+        character.features = [f for f in character.features if f.name.lower() != name.lower()]
+        messages.append(f"feature removed: {name}" if len(character.features) < before
+                        else f"⚠️ Feature not found: {name}")
+
+    return messages
+
+
 @mcp.tool
 def update_character(
     name_or_id: Annotated[str, Field(description="Character name, ID, or player name.")],
@@ -655,6 +755,10 @@ def update_character(
     remove_saving_throw_proficiencies: Annotated[str | None, Field(description="JSON list of saving throw proficiencies to remove")] = None,
     add_features_and_traits: Annotated[str | None, Field(description="JSON list of features/traits to add")] = None,
     remove_features_and_traits: Annotated[str | None, Field(description="JSON list of features/traits to remove")] = None,
+    subclass: Annotated[str | None, Field(description="Set the primary class's subclass (empty string clears it)")] = None,
+    spell_slots: Annotated[str | None, Field(description="JSON object SETTING max spell slots per level, e.g. '{\"1\": 2}' or '{\"1\": 4, \"2\": 2}'. Replaces the current table.")] = None,
+    add_features: Annotated[str | None, Field(description="JSON list of STRUCTURED features (what the player sheet shows): '[{\"name\": \"Improved Critical\", \"source\": \"Fighter 3 (Champion)\", \"description\": \"...\", \"level_gained\": 3}]'. Existing names are updated. (add_features_and_traits writes a different, legacy list.)")] = None,
+    remove_features: Annotated[str | None, Field(description="JSON list of structured feature names to remove")] = None,
     player_id: Annotated[str | None, Field(description="Player ID for permission check (omit for single-player DM mode)")] = None,
 ) -> str:
     """Update a character's properties.
@@ -669,6 +773,10 @@ def update_character(
         return f"❌ Character '{name_or_id}' not found."
     if not permission_resolver.check_permission(player_id, "update_character", str(character.id)):
         return f"🔒 Permission denied: you cannot modify '{character.name}'."
+
+    extras, extras_error = _parse_character_extras(subclass, spell_slots, add_features, remove_features)
+    if extras_error:
+        return f"❌ Not updated: {extras_error}"
 
     messages = []
     all_params = locals()
@@ -737,14 +845,18 @@ def update_character(
             if not_found:
                 messages.append(f"⚠️ Not found in {field_name}: {', '.join(not_found)}")
 
+    # 4. Subclass, spell slot table and structured features (no other tool can set these)
+    extra_messages = _apply_character_extras(character, extras)
+    messages.extend(extra_messages)
+
     # Apply scalar updates if any
     if scalar_updates:
         for key, value in scalar_updates.items():
             if key != "abilities":
                 messages.append(f"{key.replace('_', ' ')}: {value}")
         storage.update_character(str(character.id), **scalar_updates)
-    elif list_params:
-        # Only list operations — save directly
+    elif list_params or extra_messages:
+        # Only list / direct operations — save directly
         storage.save()
 
     if not messages:
