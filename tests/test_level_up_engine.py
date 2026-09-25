@@ -242,6 +242,41 @@ class TestHPCalculation:
         with pytest.raises(LevelUpError, match="Unknown hp_method"):
             engine.level_up(char, hp_method="invalid")
 
+    def test_dwarven_toughness_adds_one_hp_per_level(self):
+        """Dwarven Toughness (race trait) adds +1 on top of die + CON."""
+        char = make_character(con=16, hp=12)  # CON mod +3, avg d10 = 6
+        char.race.traits.append("Dwarven Toughness (+1 max HP now, +1 again every level)")
+        engine = LevelUpEngine(make_mock_manager(make_fighter_def()))
+        result = engine.level_up(char)
+        assert result.hp_gained == 10  # 6 + 3 + 1
+
+    def test_tough_feat_adds_two_hp_per_level(self):
+        char = make_character(con=14, hp=12)  # CON mod +2, avg d10 = 6
+        char.features.append(
+            Feature(name="Tough", source="Feat", description="", level_gained=1)
+        )
+        engine = LevelUpEngine(make_mock_manager(make_fighter_def()))
+        result = engine.level_up(char)
+        assert result.hp_gained == 10  # 6 + 2 + 2
+
+    def test_flat_hp_bonus_counted_once_across_lists(self):
+        """A bonus recorded in traits, features and the legacy list counts once."""
+        char = make_character(con=10, hp=12)  # CON mod +0, avg d10 = 6
+        char.race.traits.append("Dwarven Toughness")
+        char.features.append(
+            Feature(name="Dwarven Toughness", source="Dwarf", description="", level_gained=1)
+        )
+        char.features_and_traits.append("Dwarven Toughness (+1 max HP)")
+        engine = LevelUpEngine(make_mock_manager(make_fighter_def()))
+        result = engine.level_up(char)
+        assert result.hp_gained == 7  # 6 + 0 + 1
+
+    def test_no_flat_bonus_without_trait(self):
+        char = make_character(con=10, hp=12)
+        engine = LevelUpEngine(make_mock_manager(make_fighter_def()))
+        result = engine.level_up(char)
+        assert result.hp_gained == 6
+
     def test_hp_applies_to_both_max_and_current(self):
         char = make_character(con=14, hp=12)
         engine = LevelUpEngine(make_mock_manager(make_fighter_def()))

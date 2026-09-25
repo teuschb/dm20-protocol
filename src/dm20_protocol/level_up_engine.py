@@ -38,6 +38,14 @@ ABILITY_NAMES = {
 
 ALL_ABILITIES = set(ABILITY_NAMES.values())
 
+# Flat max-HP bonuses gained on every level-up, keyed by normalized trait/feat
+# name (the text before any " (" or ":" suffix, lowercased).
+# Dwarven Toughness: +1 HP per level (2024 Dwarf). Tough feat: +2 HP per level.
+FLAT_HP_PER_LEVEL = {
+    "dwarven toughness": 1,
+    "tough": 2,
+}
+
 # Maximum ability score (without magic items)
 MAX_ABILITY_SCORE = 20
 
@@ -217,6 +225,25 @@ class LevelUpEngine:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _flat_hp_per_level(character: Character) -> int:
+        """Sum flat max-HP-per-level bonuses from traits and feats.
+
+        Looks at race traits, structured features and the legacy text list so
+        a bonus is found wherever the sheet records it, but counts each bonus
+        only once.
+        """
+        names: list[str] = list(character.race.traits)
+        names.extend(f.name for f in character.features)
+        names.extend(character.features_and_traits)
+
+        found: set[str] = set()
+        for raw in names:
+            key = raw.split(" (")[0].split(":")[0].strip().lower()
+            if key in FLAT_HP_PER_LEVEL:
+                found.add(key)
+        return sum(FLAT_HP_PER_LEVEL[k] for k in found)
+
+    @staticmethod
     def _calculate_hp_increase(
         hit_die: int, character: Character, method: str
     ) -> int:
@@ -224,17 +251,20 @@ class LevelUpEngine:
 
         Average: hit_die // 2 + 1 + CON mod (PHB standard, minimum 1).
         Roll: random 1-hit_die + CON mod (minimum 1).
+        Flat per-level bonuses (Dwarven Toughness, Tough) are added on top
+        after the minimum-1 floor.
         """
         con_mod = character.abilities.get(
             "constitution", AbilityScore(score=10)
         ).mod
+        flat = LevelUpEngine._flat_hp_per_level(character)
 
         if method == "average":
             avg_roll = hit_die // 2 + 1
-            return max(avg_roll + con_mod, 1)
+            return max(avg_roll + con_mod, 1) + flat
         elif method == "roll":
             roll = random.randint(1, hit_die)
-            return max(roll + con_mod, 1)
+            return max(roll + con_mod, 1) + flat
         else:
             raise LevelUpError(
                 f"Unknown hp_method: '{method}'. Use 'average' or 'roll'."
