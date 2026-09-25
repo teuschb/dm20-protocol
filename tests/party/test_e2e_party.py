@@ -226,13 +226,13 @@ class TestTokenSecurity:
     def test_token_refresh_returns_stable_token(
         self, e2e_server: PartyServer
     ) -> None:
-        """With deterministic tokens, refresh returns the same stable token."""
+        """Refresh rotates the token (old link dies) and the new one works."""
         client = TestClient(e2e_server.app)
         old_token = e2e_server.token_manager.get_all_tokens()["thorin"]
 
-        # Refresh — deterministic tokens produce the same value
         new_token = e2e_server.token_manager.refresh_token("thorin")
-        assert new_token == old_token
+        assert new_token != old_token
+        assert client.get(f"/play?token={old_token}").status_code != 200
 
         # Token still works after refresh
         resp = client.get(f"/play?token={new_token}")

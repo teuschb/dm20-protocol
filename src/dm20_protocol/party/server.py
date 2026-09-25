@@ -399,12 +399,17 @@ class PartyServer:
             host: Server bind address (default: 0.0.0.0)
             port: Server port (default: 8080)
         """
-        self.token_manager = TokenManager()
+        # Per-campaign secret (in party/, which is gitignored) -> unguessable, stable tokens
+        self.token_manager = TokenManager(secret_path=campaign_dir / "party" / ".token_secret.json")
         self.connection_manager = ConnectionManager()
         self.pc_registry = pc_registry
         self.permission_resolver = permission_resolver
         self.storage = storage
         self.campaign_dir = campaign_dir
+
+        # DM presence: last time the DM touched the queue (ISO, UTC)
+        self.dm_last_active: Optional[str] = None
+        self._presence_sent_at = 0.0
         self.host = host
         self.port = port
         self.start_time = datetime.now()
@@ -439,6 +444,23 @@ class PartyServer:
         self.app = self._build_app()
 
         logger.info(f"PartyServer initialized on {host}:{port}")
+
+    def mark_dm_active(self) -> None:
+        """Record DM activity; tell connected players (throttled to one frame per 20s)."""
+        from datetime import timezone
+
+        self.dm_last_active = datetime.now(timezone.utc).isoformat()
+        now = time.monotonic()
+        if now - self._presence_sent_at < 20 or not self._loop or self._loop.is_closed():
+            return
+        self._presence_sent_at = now
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.connection_manager.broadcast({"type": "dm_presence", "last_active": self.dm_last_active}),
+                self._loop,
+            )
+        except RuntimeError as exc:
+            logger.debug("dm_presence broadcast failed: %s", exc)
 
     def _characters_hash(self) -> str:
         """Stable hash of every character's data (empty string if none loaded)."""
@@ -919,6 +941,7 @@ This page is for the DM to verify the server is running.</p></body></html>"""
                 "type": "connected",
                 "player_id": player_id,
                 "timestamp": datetime.now().isoformat(),
+                "dm_last_active": self.dm_last_active,
             })
 
             # Keep connection alive and handle incoming messages

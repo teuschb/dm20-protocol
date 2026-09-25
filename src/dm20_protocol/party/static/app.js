@@ -226,6 +226,7 @@
 
         switch (msg.type) {
             case 'connected':
+                setDmPresence(msg.dm_last_active);
                 // fix 12: the socket reconnects constantly on mobile; only
                 // announce the connection once per page load.
                 if (!connectedAnnounced) {
@@ -236,7 +237,13 @@
                 break;
 
             case 'narrative':
+                var isNewNarr = !!(msg.id && !renderedMsgIds[msg.id]);
                 addNarrativeMessage(msg);
+                if (isNewNarr) notifyNew(msg, msg.content || msg.narrative, false);
+                break;
+
+            case 'dm_presence':
+                setDmPresence(msg.last_active);
                 break;
 
             case 'thinking':
@@ -251,6 +258,7 @@
                     addNarrativeMessage(msg);
                 }
                 addPrivateMessage(msg);
+                notifyNew(msg, msg.content || msg.private || msg.narrative, true);
                 break;
 
             case 'character_update':
@@ -630,6 +638,119 @@
                 console.error('Failed to fetch character:', err);
             });
     }
+
+    // ----- DM presence -----
+    var dmLastActive = null;
+
+    function setDmPresence(iso) {
+        if (iso) dmLastActive = iso;
+        renderDmPresence();
+    }
+
+    function renderDmPresence() {
+        var el = document.getElementById('dm-presence');
+        if (!el) return;
+        if (!dmLastActive) { el.hidden = true; return; }
+        var t = Date.parse(dmLastActive);
+        if (isNaN(t)) { el.hidden = true; return; }
+        var mins = Math.max(0, Math.floor((Date.now() - t) / 60000));
+        el.hidden = false;
+        el.classList.remove('dm-presence--here', 'dm-presence--recent', 'dm-presence--away');
+        if (mins < 2) {
+            el.textContent = '● DM is here';
+            el.classList.add('dm-presence--here');
+        } else if (mins < 35) {
+            el.textContent = '● DM active ' + mins + ' min ago';
+            el.classList.add('dm-presence--recent');
+        } else {
+            var d = new Date(t);
+            var sameDay = d.toDateString() === new Date().toDateString();
+            var when = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+            if (!sameDay) when = d.toLocaleDateString([], { weekday: 'short' }) + ' ' + when;
+            el.textContent = '○ DM away — last seen ' + when + ' (your posts are saved)';
+            el.classList.add('dm-presence--away');
+        }
+    }
+    setInterval(renderDmPresence, 30000);
+
+    // ----- new-message alerts (tab badge, vibration, opt-in notifications) -----
+    var BASE_TITLE = document.title;
+    var unreadCount = 0;
+    var notifiedIds = {};
+    var swRegistration = null;
+    var pageOpenedAt = Date.now();
+
+    function notifyNew(msg, text, isPrivate) {
+        if (!((text || '') + '').trim()) return;
+        if (msg.id) {
+            if (notifiedIds[msg.id]) return;
+            notifiedIds[msg.id] = true;
+        }
+        // Only alert for messages that arrive while the player isn't looking,
+        // and never for the backlog replayed right after the page opens.
+        if (!document.hidden || Date.now() - pageOpenedAt < 5000) return;
+        unreadCount++;
+        document.title = '(' + unreadCount + ') ' + BASE_TITLE;
+        try { if (navigator.vibrate) navigator.vibrate(150); } catch (e) { /* ignore */ }
+        if (swRegistration && window.Notification && Notification.permission === 'granted') {
+            var body = ((text || '') + '').replace(/[*_#>`]/g, '').replace(/\s+/g, ' ').trim();
+            if (body.length > 140) body = body.slice(0, 137) + '…';
+            try {
+                swRegistration.showNotification(isPrivate ? 'The DM (private)' : 'The DM', {
+                    body: body, tag: 'dm-reply', renotify: true,
+                });
+            } catch (e) { /* ignore */ }
+        }
+    }
+
+    document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) {
+            unreadCount = 0;
+            document.title = BASE_TITLE;
+        }
+    });
+
+    function updateNotifyButton() {
+        var btn = document.getElementById('notify-btn');
+        if (!btn) return;
+        var on = !!(window.Notification && Notification.permission === 'granted' && swRegistration);
+        btn.textContent = on ? '🔔' : '🔕';
+        btn.title = on ? 'Notifications on (change in browser settings)' : 'Notify me when the DM replies';
+    }
+
+    function registerNotifyWorker() {
+        if (!('serviceWorker' in navigator)) return Promise.resolve(null);
+        return navigator.serviceWorker.register('/static/sw.js').then(function (reg) {
+            swRegistration = reg;
+            updateNotifyButton();
+            return reg;
+        }).catch(function () { return null; });
+    }
+
+    (function initNotifications() {
+        var btn = document.getElementById('notify-btn');
+        if (window.Notification && Notification.permission === 'granted') registerNotifyWorker();
+        updateNotifyButton();
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+            if (!window.Notification || !('serviceWorker' in navigator)) {
+                addSystemMessage('This browser can’t show notifications here — the tab title will show (1), (2)… when the DM replies.');
+                return;
+            }
+            if (Notification.permission === 'denied') {
+                addSystemMessage('Notifications are blocked for this site — allow them in your browser’s site settings.');
+                return;
+            }
+            Notification.requestPermission().then(function (p) {
+                if (p === 'granted') {
+                    registerNotifyWorker().then(function () {
+                        addSystemMessage('Notifications on — you’ll get a ping when the DM replies while this tab is in the background.');
+                    });
+                }
+                updateNotifyButton();
+            });
+        });
+    })();
 
     // ----- live sheet updates -----
     var EXPANDABLE = ['spell-entry', 'equip-slot', 'inventory-item'];

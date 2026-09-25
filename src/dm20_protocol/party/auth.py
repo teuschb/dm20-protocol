@@ -12,9 +12,14 @@ Key components:
 - Token refresh mechanism to invalidate old tokens
 """
 
+import base64
+import hashlib
+import hmac
+import json
 import logging
 import secrets
 import socket
+import threading
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -40,11 +45,61 @@ class TokenManager:
         _created_at: Dict mapping token -> creation timestamp
     """
 
-    def __init__(self) -> None:
-        """Initialize an empty TokenManager."""
+    def __init__(self, secret_path: Optional[Path] = None) -> None:
+        """Initialize an empty TokenManager.
+
+        Args:
+            secret_path: Optional JSON file holding a per-campaign secret and
+                per-player rotation counters. When given, tokens are an HMAC of
+                the player_id (stable across restarts, unguessable, never equal
+                to a value stored in the campaign files). When omitted, the legacy
+                behaviour applies: token == player_id ("OBSERVER" for observers).
+        """
         self._tokens: dict[str, str] = {}
         self._reverse_index: dict[str, str] = {}
         self._created_at: dict[str, datetime] = {}
+        self._secret_path = secret_path
+        self._lock = threading.RLock()  # refresh/generate/save may run from several threads
+        self._secret: Optional[bytes] = None
+        self._epochs: dict[str, int] = {}
+        if secret_path is not None:
+            self._load_or_create_secret()
+
+    def _load_or_create_secret(self) -> None:
+        path = self._secret_path
+        assert path is not None
+        data: dict = {}
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                logger.warning("Token secret file unreadable; generating a new one (old links stop working)")
+                data = {}
+        if not data.get("secret"):
+            data = {"secret": secrets.token_hex(32), "epochs": {}}
+        self._secret = bytes.fromhex(data["secret"])
+        self._epochs = {str(k): int(v) for k, v in (data.get("epochs") or {}).items()}
+        self._save_secret()
+
+    def _save_secret(self) -> None:
+        path = self._secret_path
+        if path is None or self._secret is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"secret": self._secret.hex(), "epochs": self._epochs}, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+
+    def _derive_token(self, player_id: str) -> str:
+        if self._secret is None:
+            return player_id  # legacy deterministic token
+        msg = f"{player_id}:{self._epochs.get(player_id, 0)}".encode("utf-8")
+        digest = hmac.new(self._secret, msg, hashlib.sha256).digest()
+        return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")[:16]
 
     def generate_token(self, player_id: str) -> str:
         """
@@ -62,15 +117,19 @@ class TokenManager:
         Returns:
             The deterministic token string (equal to player_id)
         """
+        with self._lock:
+            return self._generate_token_locked(player_id)
+
+    def _generate_token_locked(self, player_id: str) -> str:
         # Invalidate existing token if present
         if player_id in self._reverse_index:
             old_token = self._reverse_index[player_id]
             self._tokens.pop(old_token, None)
             self._created_at.pop(old_token, None)
 
-        # Deterministic token: token = player_id (stable across restarts)
-        # OBSERVER always gets the fixed string "OBSERVER"
-        token = player_id
+        # Stable across restarts: HMAC(secret, player_id:epoch) when a secret is
+        # configured, else the legacy token == player_id.
+        token = self._derive_token(player_id)
 
         # OLD random token generation (preserved for reference):
         # token = secrets.token_urlsafe(6)  # ~8 chars
@@ -114,7 +173,12 @@ class TokenManager:
             The new token
         """
         logger.info(f"Refreshing token for player_id={player_id}")
-        return self.generate_token(player_id)
+        with self._lock:
+            if self._secret is not None:
+                # bump this player's epoch so the old link stops working (persisted)
+                self._epochs[player_id] = self._epochs.get(player_id, 0) + 1
+                self._save_secret()
+            return self.generate_token(player_id)
 
     def revoke_token(self, player_id: str) -> bool:
         """

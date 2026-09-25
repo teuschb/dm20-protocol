@@ -5100,6 +5100,14 @@ def get_party_status() -> str:
     return "\n".join(lines)
 
 
+def _touch_dm(server) -> None:
+    """Mark the DM as active for the players' presence indicator (never raises)."""
+    try:
+        server.mark_dm_active()
+    except Exception as exc:  # presence is cosmetic
+        logger.debug("mark_dm_active failed: %s", exc)
+
+
 @mcp.tool
 def party_pop_action() -> str:
     """Pop the next pending player action from the Party Mode queue.
@@ -5113,6 +5121,7 @@ def party_pop_action() -> str:
     server = get_server_instance()
     if server is None:
         return "Party Mode is not running. Use `start_party_mode` to start it."
+    _touch_dm(server)
 
     action = server.action_queue.pop()
     if action is None:
@@ -5292,6 +5301,7 @@ def party_resolve_action(
     server = get_server_instance()
     if server is None:
         return "Party Mode is not running."
+    _touch_dm(server)
 
     private = {}
     if private_messages:
@@ -5347,6 +5357,7 @@ def party_push(
     server = get_server_instance()
     if server is None:
         return "Party Mode is not running."
+    _touch_dm(server)
 
     private: dict = {}
     if private_messages:
@@ -5390,6 +5401,7 @@ def party_thinking(
     server = get_server_instance()
     if server is None:
         return "Party Mode is not running."
+    _touch_dm(server)
 
     thinking_msg = {
         "type": "thinking",

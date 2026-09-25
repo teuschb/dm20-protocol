@@ -1660,3 +1660,9 @@ body {
     background: var(--accent-gold-dim);
 }
 
+
+/* DM presence line under the header */
+.dm-presence { font-size: 0.72rem; color: var(--text-secondary); padding: 2px 0 0; letter-spacing: 0.01em; }
+.dm-presence--here { color: #7fc88a; }
+.dm-presence--recent { color: #c8b46f; }
+.dm-presence--away { color: var(--text-secondary); opacity: 0.85; }

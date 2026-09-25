@@ -574,14 +574,13 @@ class TestServerEdgeCases:
     """Edge case tests for Party Mode server."""
 
     def test_stable_token_after_refresh(self, party_server: PartyServer) -> None:
-        """Test that deterministic tokens remain stable after refresh."""
+        """Refresh rotates the (secret-derived) token; the new one works."""
         client = TestClient(party_server.app)
 
         old_token = party_server.token_manager.get_all_tokens()["aragorn"]
         new_token = party_server.token_manager.refresh_token("aragorn")
 
-        # Deterministic tokens: refresh returns the same value
-        assert old_token == new_token
+        assert old_token != new_token
 
         # Token still works
         response = client.get(f"/play?token={new_token}")
