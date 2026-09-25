@@ -51,3 +51,28 @@ def test_server_uses_campaign_secret_and_tracks_presence(tmp_path: Path):
     assert srv.dm_last_active is None
     srv.mark_dm_active()            # no event loop yet: records time, doesn't broadcast
     assert srv.dm_last_active and srv.dm_last_active.endswith("+00:00")
+
+
+def test_refresh_tool_resolves_character_names(tmp_path: Path):
+    """party_refresh_token('Iona Fletcher') must rotate Iona's real token, not mint one
+    for a nonexistent player called 'Iona Fletcher'."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from dm20_protocol import main
+
+    tm = TokenManager(secret_path=tmp_path / "s.json")
+    old = tm.generate_token("Cnuhvbwc")
+    iona = SimpleNamespace(id="Cnuhvbwc", name="Iona Fletcher")
+    storage = MagicMock()
+    storage.find_character.side_effect = lambda k: iona if k in ("Iona Fletcher", "Cnuhvbwc") else None
+    storage.list_characters_detailed.return_value = [iona]
+    server = SimpleNamespace(token_manager=tm, host_ip="127.0.0.1", port=1, campaign_dir=tmp_path,
+                             pc_registry=MagicMock())
+    fn = getattr(main.party_refresh_token, "fn", main.party_refresh_token)
+    with patch.object(main, "storage", storage), \
+         patch("dm20_protocol.party.server.get_server_instance", return_value=server):
+        out = fn(player_name="Iona Fletcher")
+        assert "Cnuhvbwc" in out
+        assert tm.validate_token(old) is None                 # the real old link is dead
+        assert tm.validate_token("Iona Fletcher") is None
+        assert fn(player_name="Nobody").startswith("No character matches")

@@ -5474,6 +5474,20 @@ def party_get_prefetch(
         return _json.dumps({"cached": False, "narrative": "", "reason": str(exc)})
 
 
+def _resolve_party_player_id(name_or_id: str) -> str | None:
+    """Map a character name / id / player name (or 'OBSERVER') to the Party Mode player_id."""
+    key = (name_or_id or "").strip()
+    if not key:
+        return None
+    if key.upper() == "OBSERVER":
+        return "OBSERVER"
+    try:
+        character = storage.find_character(key)
+    except Exception:
+        character = None
+    return character.id if character else None
+
+
 @mcp.tool
 def party_kick_player(
     player_name: Annotated[str, Field(description="Player name or character ID to kick")],
@@ -5491,7 +5505,7 @@ def party_kick_player(
     if server is None:
         return "Party Mode is not running."
 
-    player_id = player_name.strip()
+    player_id = _resolve_party_player_id(player_name) or player_name.strip()
 
     # Check if player exists
     tokens = server.token_manager.get_all_tokens()
@@ -5567,7 +5581,10 @@ def party_refresh_token(
     if server is None:
         return "Party Mode is not running. Use `start_party_mode` to start it."
 
-    player_id = player_name.strip()
+    player_id = _resolve_party_player_id(player_name)
+    if player_id is None:
+        known = ", ".join(f"{c.name} ({c.id})" for c in storage.list_characters_detailed())
+        return f"No character matches '{player_name}'. Use a character name or id: {known}, or OBSERVER."
 
     # Generate new token (invalidates old one)
     new_token = server.token_manager.refresh_token(player_id)
