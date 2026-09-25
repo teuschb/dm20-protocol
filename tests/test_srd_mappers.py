@@ -44,3 +44,94 @@ def test_kokoro_maps_english_to_real_lang_codes_not_spanish():
     assert _LANGUAGE_MAP["en-us"] == "a"
     assert _LANGUAGE_MAP["en-gb"] == "b"
     assert "en" in KokoroEngine().supported_languages()
+
+
+# ---------------------------------------------------------------------------
+# SRD 2024 shapes (real API samples, trimmed)
+# ---------------------------------------------------------------------------
+from dm20_protocol.rulebooks.models import RacialTrait
+from dm20_protocol.rulebooks.sources.srd import _paras, _resolve_cache_dir
+
+
+def _src24(tmp_path):
+    return SRDSource(version="2024", cache_dir=tmp_path)
+
+
+def test_cache_dir_is_versioned_so_2024_never_reads_2014(tmp_path):
+    assert _resolve_cache_dir("2024", tmp_path) == tmp_path / "srd_2024"
+    assert _resolve_cache_dir("2024", tmp_path / "srd_2024") == tmp_path / "srd_2024"
+    assert _resolve_cache_dir("2014", tmp_path) == tmp_path  # legacy flat layout kept
+    assert _src24(tmp_path).cache_dir == tmp_path / "srd_2024"
+
+
+def test_foreign_version_cache_file_is_discarded(tmp_path):
+    src = _src24(tmp_path)
+    assert src._is_foreign_version({"url": "/api/2014/classes/bard"})
+    assert not src._is_foreign_version({"url": "/api/2024/classes/bard"})
+    assert not src._is_foreign_version({"index": "x"})  # no url -> can't tell, keep
+    assert not src._is_foreign_version([{"url": "/api/2014/x"}])  # lists are not checked
+
+
+def test_paras_handles_both_api_shapes():
+    assert _paras({"desc": ["a", "b"]}) == ["a", "b"]
+    assert _paras({"description": "one\n\ntwo"}) == ["one", "two"]
+    assert _paras({}) == []
+
+
+def test_species_has_no_ability_bonuses_and_keeps_trait_text(tmp_path):
+    src = _src24(tmp_path)
+    data = {
+        "index": "dwarf", "name": "Dwarf", "size": "Medium", "speed": 30,
+        "traits": [{"index": "stonecunning", "name": "Stonecunning"}],
+        "subspecies": [],
+    }
+    trait = RacialTrait(index="stonecunning", name="Stonecunning", desc=["Tremorsense."])
+    race = src._map_species(data, [trait])
+    assert race.ability_bonuses == []          # 2024 species grant none (2014 Gnome had +2 INT)
+    assert race.traits[0].desc == ["Tremorsense."]
+    assert race.source == "srd-2024"
+
+
+def test_2024_spell_uses_description_string(tmp_path):
+    data = {
+        "index": "fireball", "name": "Fireball", "level": 3, "casting_time": "Action",
+        "school": {"name": "Evocation"}, "components": ["V", "S", "M"],
+        "description": "A bright streak.\n\nEach creature makes a save.",
+        "higher_level": "The damage increases by 1d6.",
+        "damage": {"damage_type": {"name": "Fire"}, "damage_at_slot_level": {"3": "8d6"}},
+    }
+    sp = _src24(tmp_path)._map_spell(data)
+    assert sp.desc == ["A bright streak.", "Each creature makes a save."]
+    assert sp.higher_level == ["The damage increases by 1d6."]
+    assert sp.damage_at_slot_level == {"3": "8d6"}
+
+
+def test_2024_feat_prerequisites_dict_and_none(tmp_path):
+    src = _src24(tmp_path)
+    f = src._map_feat({"index": "grappler", "name": "Grappler", "description": "x",
+                       "prerequisites": {"minimum_level": 4, "feature_named": "Fighting Style"}})
+    assert {(p.type, p.level, p.feature) for p in f.prerequisites} == {("level", 4, None), ("feature", None, "Fighting Style")}
+    assert src._map_feat({"index": "alert", "name": "Alert", "description": "y", "prerequisites": None}).prerequisites == []
+
+
+def test_2024_equipment_categories_map_to_weapon_fields(tmp_path):
+    data = {
+        "index": "longsword", "name": "Longsword", "description": [],
+        "equipment_categories": [{"index": "martial-melee-weapons"}, {"index": "martial-weapons"},
+                                 {"index": "melee-weapons"}, {"index": "weapons"}],
+        "cost": {"quantity": 15, "unit": "gp"}, "range": {"normal": 5},
+        "damage": {"damage_dice": "1d8"}, "properties": [{"index": "versatile", "name": "Versatile"}],
+    }
+    it = _src24(tmp_path)._map_item(data)
+    assert (it.equipment_category, it.weapon_category, it.weapon_range) == ("weapon", "Martial", "Melee")
+    assert it.properties == ["Versatile"]
+
+
+def test_2024_background_gets_origin_feat(tmp_path):
+    data = {"index": "sage", "name": "Sage",
+            "ability_scores": [{"name": "CON"}, {"name": "INT"}, {"name": "WIS"}],
+            "feat": {"index": "magic-initiate", "name": "Magic Initiate"},
+            "proficiencies": [{"name": "Skill: Arcana"}], "equipment_options": []}
+    bg = _src24(tmp_path)._map_background(data)
+    assert bg.feature.name == "Origin Feat: Magic Initiate"
+    assert bg.starting_proficiencies == ["Skill: Arcana"]

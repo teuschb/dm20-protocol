@@ -6,6 +6,7 @@ caches responses locally for offline use and performance.
 """
 
 import asyncio
+import re
 import json
 import logging
 from datetime import datetime
@@ -57,6 +58,51 @@ class SRDSourceError(Exception):
     pass
 
 
+def _resolve_cache_dir(version: str, cache_dir: Path | None) -> Path:
+    """Pick the cache folder for one SRD version.
+
+    2014 keeps the legacy flat layout (files directly in ``cache_dir``) so existing
+    2014 campaigns keep their caches. Every other version gets its own
+    ``srd_<version>/`` subfolder — before this, "2024" silently read the flat
+    2014 cache because the cache path did not include the version at all.
+    """
+    if cache_dir is None:
+        return Path("dnd_data/rulebook_cache") / f"srd_{version}"
+    if version == "2014" or cache_dir.name == f"srd_{version}":
+        return cache_dir
+    return cache_dir / f"srd_{version}"
+
+
+def _paras(data: dict, list_key: str = "desc", text_key: str = "description") -> list[str]:
+    """Description paragraphs from either API shape.
+
+    2014 returns ``desc`` as a list of paragraphs; 2024 returns ``description`` as
+    one markdown string.
+    """
+    value = data.get(list_key)
+    if isinstance(value, list) and value:
+        return [str(v) for v in value]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    text = data.get(text_key)
+    if isinstance(text, str) and text.strip():
+        return [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
+    if isinstance(text, list):
+        return [str(t) for t in text]
+    return []
+
+
+def _names(items: Any) -> list[str]:
+    """Names from a list whose entries are strings or {index,name} dicts."""
+    out: list[str] = []
+    for item in items or []:
+        if isinstance(item, dict):
+            out.append(str(item.get("name") or item.get("index") or ""))
+        else:
+            out.append(str(item))
+    return out
+
+
 class SRDSource(RulebookSourceBase):
     """
     Rulebook source for the official D&D 5e SRD via 5e-srd-api.
@@ -88,7 +134,7 @@ class SRDSource(RulebookSourceBase):
         )
 
         self.version = version
-        self.cache_dir = cache_dir or Path("dnd_data/rulebook_cache") / f"srd_{version}"
+        self.cache_dir = _resolve_cache_dir(version, cache_dir)
         self._client: httpx.AsyncClient | None = None
         self._request_sem: asyncio.Semaphore | None = None
 
@@ -114,7 +160,10 @@ class SRDSource(RulebookSourceBase):
             try:
                 # Load content in batches to manage concurrency
                 await self._load_classes()
-                await self._load_races()
+                if self.version == "2014":
+                    await self._load_races()
+                else:
+                    await self._load_species()  # 2024+: races became species
                 await self._load_spells()
                 await self._load_monsters()
                 await self._load_equipment()
@@ -157,7 +206,15 @@ class SRDSource(RulebookSourceBase):
         cache_file = self._get_cache_path(endpoint)
         if cache_file.exists():
             try:
-                return json.loads(cache_file.read_text(encoding="utf-8"))
+                cached = json.loads(cache_file.read_text(encoding="utf-8"))
+                if self._is_foreign_version(cached):
+                    logger.warning(
+                        f"Cache file {cache_file.name} is from another API version "
+                        f"(url {cached.get('url')}); refetching for {self.version}"
+                    )
+                    cache_file.unlink()
+                else:
+                    return cached
             except json.JSONDecodeError:
                 logger.warning(f"Corrupt cache file: {cache_file}, refetching")
                 cache_file.unlink()
@@ -210,6 +267,15 @@ class SRDSource(RulebookSourceBase):
                     raise SRDSourceError(f"HTTP error: {e}") from e
 
         raise SRDSourceError(f"Failed to fetch {endpoint} after {MAX_RETRIES} retries: {last_error}")
+
+    def _is_foreign_version(self, data: Any) -> bool:
+        """True if a cached payload carries an /api/<other version>/ url."""
+        if not isinstance(data, dict):
+            return False
+        url = data.get("url")
+        if not isinstance(url, str) or not url.startswith("/api/"):
+            return False
+        return not url.startswith(f"/api/{self.version}/")
 
     def _get_cache_path(self, endpoint: str) -> Path:
         """Convert endpoint to cache file path."""
@@ -279,6 +345,38 @@ class SRDSource(RulebookSourceBase):
 
             except Exception as e:
                 logger.warning(f"Failed to load race {index}: {e}")
+
+    async def _load_trait(self, ref: dict) -> RacialTrait:
+        """Fetch one species/subspecies trait (name + description)."""
+        index = ref.get("index", "")
+        try:
+            data = await self._fetch(f"/traits/{index}")
+            return RacialTrait(index=index, name=data.get("name", ref.get("name", "")), desc=_paras(data))
+        except Exception as e:
+            logger.warning(f"Failed to load trait {index}: {e}")
+            return RacialTrait(index=index, name=ref.get("name", ""))
+
+    async def _load_species(self) -> None:
+        """Load 2024 species (the 2024 name for races) and their subspecies."""
+        species_list = await self._fetch_list("/species")
+
+        for ref in species_list:
+            index = ref["index"]
+            try:
+                data = await self._fetch(f"/species/{index}")
+                traits = [await self._load_trait(t) for t in data.get("traits", [])]
+                self._races[index] = self._map_species(data, traits)
+
+                for sub_ref in data.get("subspecies", []):
+                    sub_index = sub_ref["index"]
+                    try:
+                        sub_data = await self._fetch(f"/subspecies/{sub_index}")
+                        sub_traits = [await self._load_trait(t) for t in sub_data.get("traits", [])]
+                        self._subraces[sub_index] = self._map_subspecies(sub_data, sub_traits)
+                    except Exception as e:
+                        logger.warning(f"Failed to load subspecies {sub_index}: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to load species {index}: {e}")
 
     async def _load_spells(self) -> None:
         """Load all spells."""
@@ -376,11 +474,14 @@ class SRDSource(RulebookSourceBase):
         for level_data in levels_data:
             level = level_data.get("level", 1)
             features = [f["name"] for f in level_data.get("features", [])]
+            class_specific = dict(level_data.get("class_specific") or {})
+            if level_data.get("spellcasting"):  # 2024: cantrips/prepared/slots per level
+                class_specific["spellcasting"] = level_data["spellcasting"]
             class_levels[level] = ClassLevelInfo(
                 level=level,
                 proficiency_bonus=level_data.get("prof_bonus", 2),
                 features=features,
-                class_specific=level_data.get("class_specific", {}),
+                class_specific=class_specific,
             )
 
         # Build spellcasting info if applicable
@@ -411,8 +512,8 @@ class SRDSource(RulebookSourceBase):
             index=data["index"],
             name=data["name"],
             parent_class=data.get("class", {}).get("index", ""),
-            subclass_flavor=data.get("subclass_flavor"),
-            desc=data.get("desc", []),
+            subclass_flavor=data.get("subclass_flavor") or data.get("summary"),
+            desc=_paras(data),
             source=self.source_id,
         )
 
@@ -470,6 +571,35 @@ class SRDSource(RulebookSourceBase):
             source=self.source_id,
         )
 
+    def _map_species(self, data: dict, traits: list[RacialTrait]) -> RaceDefinition:
+        """Map a 2024 species. 2024 species grant NO ability score bonuses."""
+        size_str = str(data.get("size", "Medium"))
+        try:
+            size = Size(size_str)
+        except ValueError:
+            size = Size.MEDIUM
+        return RaceDefinition(
+            index=data["index"],
+            name=data["name"],
+            speed=data.get("speed", 30),
+            ability_bonuses=[],
+            size=size,
+            size_description=size_str,
+            traits=traits,
+            subraces=[s["index"] for s in data.get("subspecies", [])],
+            source=self.source_id,
+        )
+
+    def _map_subspecies(self, data: dict, traits: list[RacialTrait]) -> SubraceDefinition:
+        """Map a 2024 subspecies (lineage / ancestry / legacy)."""
+        return SubraceDefinition(
+            index=data["index"],
+            name=data["name"],
+            parent_race=(data.get("species") or {}).get("index", ""),
+            traits=traits,
+            source=self.source_id,
+        )
+
     def _map_spell(self, data: dict) -> SpellDefinition:
         """Map API spell data to SpellDefinition."""
         # Map school
@@ -499,11 +629,16 @@ class SRDSource(RulebookSourceBase):
             material=data.get("material"),
             ritual=data.get("ritual", False),
             concentration=data.get("concentration", False),
-            desc=data.get("desc", []),
-            higher_level=data.get("higher_level"),
+            desc=_paras(data),
+            higher_level=_paras(data, "higher_level", "higher_level") or None,
             classes=[c["index"] for c in data.get("classes", [])],
             subclasses=[s["index"] for s in data.get("subclasses", [])],
             damage_type=(damage.get("damage_type") or {}).get("name"),
+            damage_at_slot_level=damage.get("damage_at_slot_level") or None,
+            damage_at_character_level=damage.get("damage_at_character_level") or None,
+            dc_type=((data.get("dc") or {}).get("dc_type") or {}).get("index"),
+            dc_success=(data.get("dc") or {}).get("dc_success"),
+            area_of_effect=data.get("area_of_effect") or None,
             source=self.source_id,
         )
 
@@ -545,6 +680,15 @@ class SRDSource(RulebookSourceBase):
                 dc=action.get("dc"),
             ))
 
+        # 2024 statblocks list bonus actions separately; keep them, tagged
+        for ba in data.get("bonus_actions") or []:
+            actions.append(MonsterAction(
+                name=f"{ba.get('name', '')} (Bonus Action)",
+                desc=ba.get("desc", ""),
+                attack_bonus=ba.get("attack_bonus"),
+                damage=ba.get("damage"),
+            ))
+
         # Map legendary actions
         legendary_actions = None
         if data.get("legendary_actions"):
@@ -564,7 +708,7 @@ class SRDSource(RulebookSourceBase):
             alignment=data.get("alignment", ""),
             armor_class=armor_class,
             hit_points=data.get("hit_points", 1),
-            hit_dice=data.get("hit_dice", "1d8"),
+            hit_dice=data.get("hit_dice") or "1d8",
             speed={k: str(v) for k, v in (data.get("speed") or {}).items()},
             strength=data.get("strength", 10),
             dexterity=data.get("dexterity", 10),
@@ -573,16 +717,22 @@ class SRDSource(RulebookSourceBase):
             wisdom=data.get("wisdom", 10),
             charisma=data.get("charisma", 10),
             proficiencies=data.get("proficiencies", []),
-            damage_vulnerabilities=data.get("damage_vulnerabilities", []),
-            damage_resistances=data.get("damage_resistances", []),
-            damage_immunities=data.get("damage_immunities", []),
-            condition_immunities=[c.get("name", "") for c in data.get("condition_immunities", [])],
+            damage_vulnerabilities=_names(data.get("damage_vulnerabilities")),
+            damage_resistances=_names(data.get("damage_resistances")),
+            damage_immunities=_names(data.get("damage_immunities")),
+            condition_immunities=_names(data.get("condition_immunities")),
             senses={k: str(v) for k, v in (data.get("senses") or {}).items()},
             languages=data.get("languages", ""),
             challenge_rating=data.get("challenge_rating", 0),
             xp=data.get("xp", 0),
             special_abilities=special_abilities,
             actions=actions,
+            reactions=[
+                MonsterAction(name=r.get("name", ""), desc=r.get("desc", ""))
+                for r in data.get("reactions") or []
+            ],
+            hit_points_roll=data.get("hit_points_roll"),
+            proficiency_bonus=data.get("proficiency_bonus"),
             legendary_actions=legendary_actions,
             source=self.source_id,
         )
@@ -590,17 +740,25 @@ class SRDSource(RulebookSourceBase):
     def _map_feat(self, data: dict) -> FeatDefinition:
         """Map API feat data to FeatDefinition."""
         prerequisites = []
-        for prereq in data.get("prerequisites", []):
-            prerequisites.append(Prerequisite(
-                type=prereq.get("type", ""),
-                ability_score=prereq.get("ability_score", {}).get("index"),
-                minimum_score=prereq.get("minimum_score"),
-            ))
+        raw = data.get("prerequisites") or []
+        if isinstance(raw, dict):
+            # 2024: {"minimum_level": 4, "feature_named": "Fighting Style"}
+            if raw.get("minimum_level") is not None:
+                prerequisites.append(Prerequisite(type="level", level=raw["minimum_level"]))
+            if raw.get("feature_named"):
+                prerequisites.append(Prerequisite(type="feature", feature=raw["feature_named"]))
+        else:
+            for prereq in raw:
+                prerequisites.append(Prerequisite(
+                    type=prereq.get("type", ""),
+                    ability_score=(prereq.get("ability_score") or {}).get("index"),
+                    minimum_score=prereq.get("minimum_score"),
+                ))
 
         return FeatDefinition(
             index=data["index"],
             name=data["name"],
-            desc=data.get("desc", []),
+            desc=_paras(data),
             prerequisites=prerequisites,
             source=self.source_id,
         )
@@ -614,28 +772,78 @@ class SRDSource(RulebookSourceBase):
                 desc=data["feature"].get("desc", []),
             )
 
+        # 2024 backgrounds grant an origin feat + ability score options instead of a feature
+        if feature is None and data.get("feat"):
+            abilities = ", ".join(_names(data.get("ability_scores")))
+            feature = BackgroundFeature(
+                name=f"Origin Feat: {data['feat'].get('name', '')}",
+                desc=[f"Ability Score options: {abilities}"] if abilities else [],
+            )
+
+        profs = data.get("starting_proficiencies") or data.get("proficiencies") or []
+        equip_opts = data.get("equipment_options") or []
         return BackgroundDefinition(
             index=data["index"],
             name=data["name"],
-            starting_proficiencies=[p["name"] for p in data.get("starting_proficiencies", [])],
+            desc=_paras(data),
+            starting_proficiencies=_names(profs),
+            starting_equipment_options=[o for o in equip_opts if isinstance(o, dict)],
             feature=feature,
             source=self.source_id,
         )
 
     def _map_item(self, data: dict) -> ItemDefinition:
-        """Map API equipment data to ItemDefinition."""
+        """Map API equipment data to ItemDefinition (2014 and 2024 shapes)."""
+        # 2014: equipment_category {index}; 2024: equipment_categories [{index}, ...]
+        cats = [c.get("index", "") for c in data.get("equipment_categories") or []]
+        if data.get("equipment_category"):
+            category = data["equipment_category"].get("index", "gear")
+        elif "weapons" in cats:
+            category = "weapon"
+        elif "armor" in cats:
+            category = "armor"
+        else:
+            category = cats[0] if cats else "gear"
+
+        weapon_category = data.get("weapon_category")
+        weapon_range = data.get("weapon_range")
+        armor_category = data.get("armor_category")
+        if weapon_category is None:
+            if "martial-weapons" in cats:
+                weapon_category = "Martial"
+            elif "simple-weapons" in cats:
+                weapon_category = "Simple"
+        if weapon_range is None:
+            if "melee-weapons" in cats:
+                weapon_range = "Melee"
+            elif "ranged-weapons" in cats:
+                weapon_range = "Ranged"
+        if armor_category is None:
+            for key, label in (("light-armor", "Light"), ("medium-armor", "Medium"),
+                               ("heavy-armor", "Heavy"), ("shields", "Shield")):
+                if key in cats:
+                    armor_category = label
+
+        rng = data.get("range")
+        if isinstance(rng, dict):
+            rng = {k: v for k, v in rng.items() if isinstance(v, int)} or None
+        else:
+            rng = None
+
         return ItemDefinition(
             index=data["index"],
             name=data["name"],
-            desc=data.get("desc", []),
-            equipment_category=data.get("equipment_category", {}).get("index", "gear"),
+            desc=_paras(data),
+            equipment_category=category,
             cost=data.get("cost"),
             weight=data.get("weight"),
-            weapon_category=data.get("weapon_category"),
-            weapon_range=data.get("weapon_range"),
+            weapon_category=weapon_category,
+            weapon_range=weapon_range,
             damage=data.get("damage"),
-            properties=[p["name"] for p in data.get("properties", [])],
-            armor_category=data.get("armor_category"),
+            two_handed_damage=data.get("two_handed_damage"),
+            range=rng,
+            properties=_names(data.get("properties")),
+            armor_category=armor_category,
             armor_class=data.get("armor_class"),
             source=self.source_id,
         )
