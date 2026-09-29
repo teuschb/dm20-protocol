@@ -16,6 +16,7 @@
     var TOKEN = config.token || '';
     var PLAYER_ID = config.playerId || '';
     var PLAYER_NAME = config.playerName || PLAYER_ID;
+    var VAPID_PUBLIC_KEY = config.vapidPublicKey || '';
     var WS_PROTOCOL = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
     var WS_URL = WS_PROTOCOL + '//' + window.location.host + '/ws?token=' + TOKEN;
     const API_BASE = window.location.origin;
@@ -718,11 +719,48 @@
         btn.title = on ? 'Notifications on (change in browser settings)' : 'Notify me when the DM replies';
     }
 
+    // Converts the VAPID public key (base64url, no padding) to the Uint8Array
+    // pushManager.subscribe() requires as applicationServerKey.
+    function urlBase64ToUint8Array(base64String) {
+        var padding = '='.repeat((4 - base64String.length % 4) % 4);
+        var base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+        var rawData = window.atob(base64);
+        var outputArray = new Uint8Array(rawData.length);
+        for (var i = 0; i < rawData.length; ++i) {
+            outputArray[i] = rawData.charCodeAt(i);
+        }
+        return outputArray;
+    }
+
+    // Actual Web Push subscription — this is what lets a notification reach
+    // the player with the tab fully backgrounded or closed. Registering the
+    // service worker alone (registerNotifyWorker) only satisfies Android
+    // Chrome's requirement that showNotification() come from a SW; without a
+    // push subscription, nothing wakes that SW while the page isn't running.
+    // Best-effort: browsers without Push API support (or with it disabled)
+    // silently keep the old tab-title/live-socket fallback instead.
+    function subscribeForPush(reg) {
+        if (!reg || !reg.pushManager || !VAPID_PUBLIC_KEY) return;
+        reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        }).then(function (sub) {
+            return fetch(API_BASE + '/push/subscribe?token=' + encodeURIComponent(TOKEN), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(sub.toJSON()),
+            });
+        }).catch(function (e) {
+            console.error('Push subscribe failed:', e);
+        });
+    }
+
     function registerNotifyWorker() {
         if (!('serviceWorker' in navigator)) return Promise.resolve(null);
         return navigator.serviceWorker.register('/static/sw.js').then(function (reg) {
             swRegistration = reg;
             updateNotifyButton();
+            subscribeForPush(reg);
             return reg;
         }).catch(function () { return null; });
     }
@@ -744,7 +782,7 @@
             Notification.requestPermission().then(function (p) {
                 if (p === 'granted') {
                     registerNotifyWorker().then(function () {
-                        addSystemMessage('Notifications on — you’ll get a ping when the DM replies while this tab is in the background.');
+                        addSystemMessage('Notifications on — you’ll get a ping when the DM replies, even with this tab closed.');
                     });
                 }
                 updateNotifyButton();

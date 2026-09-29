@@ -24,6 +24,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from datetime import datetime
@@ -49,6 +50,7 @@ from dm20_protocol.storage import DnDStorage
 
 from . import bridge
 from .auth import TokenManager, detect_host_ip
+from .push import PushKeys, PushSender, PushSubscriptionStore
 from .queue import ActionQueue, ResponseQueue
 
 if TYPE_CHECKING:
@@ -402,6 +404,13 @@ class PartyServer:
         # Per-campaign secret (in party/, which is gitignored) -> unguessable, stable tokens
         self.token_manager = TokenManager(secret_path=campaign_dir / "party" / ".token_secret.json")
         self.connection_manager = ConnectionManager()
+
+        # Web Push: reaches a player even with their tab fully backgrounded or
+        # closed (the WebSocket-only "Notify me" button couldn't). Keys and
+        # subscriptions persist under party/ (gitignored) across restarts.
+        self.push_keys = PushKeys(campaign_dir / "party" / ".vapid_private.pem")
+        self.push_store = PushSubscriptionStore(campaign_dir / "party" / ".push_subscriptions.json")
+        self.push_sender = PushSender(self.push_keys, self.push_store)
         self.pc_registry = pc_registry
         self.permission_resolver = permission_resolver
         self.storage = storage
@@ -529,11 +538,45 @@ class PartyServer:
                     "status": "resolved",
                 }
                 await self.connection_manager.broadcast(action_status_msg)
+            await self._send_push_for_response(response)
 
         try:
             asyncio.run_coroutine_threadsafe(_do_broadcast(), self._loop)
         except RuntimeError as e:
             logger.error(f"Failed to schedule broadcast: {e}")
+
+    async def _send_push_for_response(self, response: dict) -> None:
+        """Web Push companion to broadcast_response.
+
+        Sent to every player with a stored subscription, regardless of
+        live WebSocket state — that's the whole point, since a dropped
+        socket (mobile browsers do this aggressively while backgrounded)
+        is exactly when a player needs the push, not the live broadcast.
+        The service worker itself (static/sw.js) skips showing it if a
+        client tab is already open and visible, so it never doubles up
+        with what notifyNew() already handled over the live socket.
+        """
+        subscribed = self.push_store.all()
+        if not subscribed:
+            return
+        for player_id in list(subscribed.keys()):
+            filtered = bridge.format_response(response, player_id, self.permission_resolver)
+            text = (filtered.get("private") or filtered.get("narrative") or "").strip()
+            if not text:
+                continue
+            body = re.sub(r"[*_#>`]", "", text)
+            body = re.sub(r"\s+", " ", body).strip()
+            if len(body) > 140:
+                body = body[:137] + "…"
+            payload = {
+                "title": "The DM (private)" if "private" in filtered else "The DM",
+                "body": body,
+                "tag": "dm-reply",
+            }
+            try:
+                await asyncio.to_thread(self.push_sender.send_to, player_id, payload)
+            except Exception as exc:  # never let a push failure break the broadcast
+                logger.warning(f"Push dispatch failed for {player_id}: {exc}")
 
     def _build_app(self) -> Starlette:
         """
@@ -550,6 +593,9 @@ class PartyServer:
             Route("/action/{action_id}/status", self.get_action_status, methods=["GET"]),
             Route("/character/{player_id}", self.get_character, methods=["GET"]),
             Route("/status", self.get_status, methods=["GET"]),
+            Route("/push/vapid-key", self.get_vapid_public_key, methods=["GET"]),
+            Route("/push/subscribe", self.post_push_subscribe, methods=["POST"]),
+            Route("/push/unsubscribe", self.post_push_unsubscribe, methods=["POST"]),
             WebSocketRoute("/ws", self.websocket_endpoint),
             Mount("/static", app=StaticFiles(directory=str(static_dir)), name="static"),
         ]
@@ -613,6 +659,7 @@ This page is for the DM to verify the server is running.</p></body></html>"""
         html = html.replace("{player_id}", player_id)
         html = html.replace("{player_name}", display_name)
         html = html.replace("{token}", token)
+        html = html.replace("{vapid_public_key}", self.push_keys.public_key_b64)
 
         return HTMLResponse(html)
 
@@ -684,6 +731,71 @@ This page is for the DM to verify the server is running.</p></body></html>"""
             "action_id": action_id,
             "status": status,
         })
+
+    async def get_vapid_public_key(self, request: Request) -> Response:
+        """
+        Public VAPID key the client passes to pushManager.subscribe().
+
+        Not secret — it identifies this campaign's push "application server"
+        to the browser's push service. Also injected directly into the
+        /play page (see get_play), so this route mainly exists as a
+        fallback / for re-fetching without a full page reload.
+        """
+        return JSONResponse({"key": self.push_keys.public_key_b64})
+
+    async def post_push_subscribe(self, request: Request) -> Response:
+        """
+        Register (or replace) a player's Web Push subscription.
+
+        Args:
+            request: Starlette request object; body is the PushSubscription
+                JSON (endpoint + keys.p256dh + keys.auth) from the browser.
+
+        Returns:
+            JSON success response, or 401/400 on auth/validation failure.
+        """
+        token = request.headers.get("Authorization", "").replace("Bearer ", "")
+        if not token:
+            token = request.query_params.get("token", "")
+
+        player_id = self.token_manager.validate_token(token)
+        if not player_id:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        try:
+            body = await request.json()
+        except Exception as e:
+            return JSONResponse({"error": f"Invalid request: {e}"}, status_code=400)
+
+        endpoint = body.get("endpoint")
+        keys = body.get("keys") or {}
+        if not endpoint or not keys.get("p256dh") or not keys.get("auth"):
+            return JSONResponse({"error": "Invalid subscription"}, status_code=400)
+
+        self.push_store.set(player_id, {"endpoint": endpoint, "keys": keys})
+        logger.info(f"Push subscription registered for {player_id}")
+        return JSONResponse({"success": True})
+
+    async def post_push_unsubscribe(self, request: Request) -> Response:
+        """
+        Remove a player's Web Push subscription.
+
+        Args:
+            request: Starlette request object
+
+        Returns:
+            JSON success response, or 401 on auth failure.
+        """
+        token = request.headers.get("Authorization", "").replace("Bearer ", "")
+        if not token:
+            token = request.query_params.get("token", "")
+
+        player_id = self.token_manager.validate_token(token)
+        if not player_id:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        self.push_store.remove(player_id)
+        return JSONResponse({"success": True})
 
     async def get_character(self, request: Request) -> Response:
         """
