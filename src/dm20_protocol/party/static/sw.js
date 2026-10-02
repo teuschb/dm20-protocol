@@ -12,10 +12,12 @@ self.addEventListener('push', function (e) {
     var body = data.body || '';
     e.waitUntil(
         self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
-            // If a tab is already open and visible, the live WebSocket path
-            // (notifyNew() in app.js) already surfaced this — don't double up.
-            var visible = list.some(function (c) { return c.visibilityState === 'visible'; });
-            if (visible) return;
+            // Skip only if the player is looking at a game tab right now.
+            // "Visible" isn't enough: a desktop tab left open behind other
+            // windows or on another monitor still reports visible, and
+            // suppressing on that meant those players never got pinged.
+            var looking = list.some(function (c) { return c.focused; });
+            if (looking) return;
             return self.registration.showNotification(title, {
                 body: body,
                 tag: data.tag || 'dm-reply',

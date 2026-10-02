@@ -552,9 +552,11 @@ class PartyServer:
         live WebSocket state — that's the whole point, since a dropped
         socket (mobile browsers do this aggressively while backgrounded)
         is exactly when a player needs the push, not the live broadcast.
-        The service worker itself (static/sw.js) skips showing it if a
-        client tab is already open and visible, so it never doubles up
-        with what notifyNew() already handled over the live socket.
+        The service worker itself (static/sw.js) skips showing it only if
+        the player has a game tab focused right now; a tab that's merely
+        open (or visible on a screen they're not looking at) still gets it.
+        notifyNew() in app.js leaves the system notification to this path
+        whenever the device is push-subscribed, so the two never double up.
         """
         subscribed = self.push_store.all()
         if not subscribed:
@@ -660,8 +662,21 @@ This page is for the DM to verify the server is running.</p></body></html>"""
         html = html.replace("{player_name}", display_name)
         html = html.replace("{token}", token)
         html = html.replace("{vapid_public_key}", self.push_keys.public_key_b64)
+        # Content hash of the page's assets, so a reload after a server
+        # update fetches the new app.js/style.css instead of a cached copy.
+        html = html.replace("{asset_version}", self._asset_version(static_file.parent))
 
         return HTMLResponse(html)
+
+    @staticmethod
+    def _asset_version(static_dir: Path) -> str:
+        digest = hashlib.sha256()
+        for name in ("app.js", "style.css"):
+            try:
+                digest.update((static_dir / name).read_bytes())
+            except OSError:
+                pass
+        return digest.hexdigest()[:12]
 
     async def post_action(self, request: Request) -> Response:
         """
@@ -745,7 +760,8 @@ This page is for the DM to verify the server is running.</p></body></html>"""
 
     async def post_push_subscribe(self, request: Request) -> Response:
         """
-        Register (or replace) a player's Web Push subscription.
+        Register one device's Web Push subscription for a player (a player
+        can have several; re-subscribing the same device just refreshes it).
 
         Args:
             request: Starlette request object; body is the PushSubscription
@@ -772,13 +788,15 @@ This page is for the DM to verify the server is running.</p></body></html>"""
         if not endpoint or not keys.get("p256dh") or not keys.get("auth"):
             return JSONResponse({"error": "Invalid subscription"}, status_code=400)
 
-        self.push_store.set(player_id, {"endpoint": endpoint, "keys": keys})
+        self.push_store.add(player_id, {"endpoint": endpoint, "keys": keys})
         logger.info(f"Push subscription registered for {player_id}")
         return JSONResponse({"success": True})
 
     async def post_push_unsubscribe(self, request: Request) -> Response:
         """
-        Remove a player's Web Push subscription.
+        Remove a player's Web Push subscription — just the one device named
+        by an "endpoint" in the JSON body, or all of the player's devices if
+        the body has none.
 
         Args:
             request: Starlette request object
@@ -794,7 +812,12 @@ This page is for the DM to verify the server is running.</p></body></html>"""
         if not player_id:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-        self.push_store.remove(player_id)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        endpoint = body.get("endpoint") if isinstance(body, dict) else None
+        self.push_store.remove(player_id, endpoint)
         return JSONResponse({"success": True})
 
     async def get_character(self, request: Request) -> Response:

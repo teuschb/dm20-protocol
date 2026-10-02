@@ -17,10 +17,13 @@ involved — the DM's own server sends directly to it.
 Key components:
 - PushKeys: this campaign's VAPID keypair (generated once, persisted as a
   PEM file under party/, gitignored like the token secret).
-- PushSubscriptionStore: per-player subscription (endpoint + keys), also
-  persisted so it survives server restarts.
-- PushSender: sends a payload to one or all subscribed players, dropping
-  any subscription the push service reports as gone (404/410).
+- PushSubscriptionStore: per-player subscriptions (endpoint + keys), also
+  persisted so they survive server restarts. A player can have several
+  (phone + laptop, or someone else opening their link to test) — keeping
+  only the latest silently cut off whichever device subscribed first.
+- PushSender: sends a payload to every device of one or all subscribed
+  players, dropping any subscription the push service reports as gone
+  (404/410).
 """
 
 from __future__ import annotations
@@ -87,19 +90,42 @@ class PushSubscriptionStore:
         except OSError:
             pass
 
-    def set(self, player_id: str, subscription: dict) -> None:
+    MAX_PER_PLAYER = 5
+
+    def _subs(self, player_id: str) -> list[dict]:
+        """A player's subscriptions, upgrading the old one-per-player format."""
+        subs = self._data.get(player_id)
+        if subs is None:
+            return []
+        if isinstance(subs, dict):  # pre-multi-device file: a single subscription
+            subs = [subs]
+            self._data[player_id] = subs
+        return subs
+
+    def add(self, player_id: str, subscription: dict) -> None:
+        """Add (or refresh) one device's subscription; keeps the newest few per player."""
         with self._lock:
-            self._data[player_id] = subscription
+            subs = [s for s in self._subs(player_id) if s.get("endpoint") != subscription.get("endpoint")]
+            subs.append(subscription)
+            self._data[player_id] = subs[-self.MAX_PER_PLAYER:]
             self._save()
 
-    def remove(self, player_id: str) -> None:
+    def remove(self, player_id: str, endpoint: Optional[str] = None) -> None:
+        """Remove one device's subscription, or all of a player's if no endpoint is given."""
         with self._lock:
-            if self._data.pop(player_id, None) is not None:
-                self._save()
+            subs = self._subs(player_id)
+            if not subs:
+                return
+            keep = [] if endpoint is None else [s for s in subs if s.get("endpoint") != endpoint]
+            if keep:
+                self._data[player_id] = keep
+            else:
+                self._data.pop(player_id, None)
+            self._save()
 
-    def all(self) -> dict[str, dict]:
+    def all(self) -> dict[str, list[dict]]:
         with self._lock:
-            return dict(self._data)
+            return {pid: list(self._subs(pid)) for pid in list(self._data)}
 
 
 class PushSender:
@@ -110,13 +136,18 @@ class PushSender:
         self._store = store
 
     def send_to(self, player_id: str, payload: dict) -> bool:
-        """Send one payload to one player. Safe to call from a worker thread
-        (this makes a blocking HTTP request to the push service) — never
-        raises; failures are logged and return False.
+        """Send one payload to every device a player has subscribed. Safe to
+        call from a worker thread (this makes blocking HTTP requests to the
+        push service) — never raises; failures are logged. Returns True if
+        at least one device accepted it.
         """
-        sub = self._store.all().get(player_id)
-        if not sub:
-            return False
+        delivered = False
+        for sub in self._store.all().get(player_id, []):
+            if self._send_one(player_id, sub, payload):
+                delivered = True
+        return delivered
+
+    def _send_one(self, player_id: str, sub: dict, payload: dict) -> bool:
         try:
             webpush(
                 subscription_info=sub,
@@ -128,8 +159,8 @@ class PushSender:
         except WebPushException as exc:
             status = getattr(exc.response, "status_code", None)
             if status in (404, 410):
-                logger.info(f"Push subscription gone for {player_id}; removing")
-                self._store.remove(player_id)
+                logger.info(f"Push subscription gone for {player_id}; removing that device")
+                self._store.remove(player_id, sub.get("endpoint"))
             else:
                 logger.warning(f"Push send failed for {player_id}: {exc}")
             return False

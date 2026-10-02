@@ -679,7 +679,14 @@
     var unreadCount = 0;
     var notifiedIds = {};
     var swRegistration = null;
+    var pushSubscribed = false;
     var pageOpenedAt = Date.now();
+
+    function isLooking() {
+        // Visible isn't enough: a tab left open behind other windows or on
+        // another monitor is "visible" while nobody is reading it.
+        return !document.hidden && document.hasFocus();
+    }
 
     function notifyNew(msg, text, isPrivate) {
         if (!((text || '') + '').trim()) return;
@@ -689,11 +696,13 @@
         }
         // Only alert for messages that arrive while the player isn't looking,
         // and never for the backlog replayed right after the page opens.
-        if (!document.hidden || Date.now() - pageOpenedAt < 5000) return;
+        if (isLooking() || Date.now() - pageOpenedAt < 5000) return;
         unreadCount++;
         document.title = '(' + unreadCount + ') ' + BASE_TITLE;
         try { if (navigator.vibrate) navigator.vibrate(150); } catch (e) { /* ignore */ }
-        if (swRegistration && window.Notification && Notification.permission === 'granted') {
+        // A push-subscribed device gets the system notification from the
+        // server's Web Push (sw.js); showing one here too would double it.
+        if (!pushSubscribed && swRegistration && window.Notification && Notification.permission === 'granted') {
             var body = ((text || '') + '').replace(/[*_#>`]/g, '').replace(/\s+/g, ' ').trim();
             if (body.length > 140) body = body.slice(0, 137) + '…';
             try {
@@ -704,12 +713,13 @@
         }
     }
 
-    document.addEventListener('visibilitychange', function () {
-        if (!document.hidden) {
-            unreadCount = 0;
-            document.title = BASE_TITLE;
-        }
-    });
+    function clearUnread() {
+        if (!isLooking()) return;
+        unreadCount = 0;
+        document.title = BASE_TITLE;
+    }
+    document.addEventListener('visibilitychange', clearUnread);
+    window.addEventListener('focus', clearUnread);
 
     function updateNotifyButton() {
         var btn = document.getElementById('notify-btn');
@@ -750,6 +760,8 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(sub.toJSON()),
             });
+        }).then(function (res) {
+            pushSubscribed = !!(res && res.ok);
         }).catch(function (e) {
             console.error('Push subscribe failed:', e);
         });
