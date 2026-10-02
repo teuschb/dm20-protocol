@@ -591,6 +591,7 @@ class PartyServer:
         routes = [
             Route("/", self.get_root, methods=["GET"]),
             Route("/play", self.get_play, methods=["GET"]),
+            Route("/map", self.get_map, methods=["GET"]),
             Route("/action", self.post_action, methods=["POST"]),
             Route("/action/{action_id}/status", self.get_action_status, methods=["GET"]),
             Route("/character/{player_id}", self.get_character, methods=["GET"]),
@@ -662,10 +663,57 @@ This page is for the DM to verify the server is running.</p></body></html>"""
         html = html.replace("{player_name}", display_name)
         html = html.replace("{token}", token)
         html = html.replace("{vapid_public_key}", self.push_keys.public_key_b64)
+        # A Map button appears only when the campaign has a map page.
+        map_link = ""
+        if self._map_file().exists():
+            map_link = (
+                f'<a class="mute-btn" id="map-btn" href="/map?token={token}" '
+                'target="_blank" rel="noopener" title="Open the map">🗺️</a>'
+            )
+        html = html.replace("{map_link}", map_link)
         # Content hash of the page's assets, so a reload after a server
         # update fetches the new app.js/style.css instead of a cached copy.
         html = html.replace("{asset_version}", self._asset_version(static_file.parent))
 
+        return HTMLResponse(html)
+
+    def _map_file(self) -> Path:
+        return self.campaign_dir / "maps" / "index.html"
+
+    async def get_map(self, request: Request) -> Response:
+        """
+        Serve the campaign's player-facing map page (campaign/maps/index.html).
+
+        Token-gated like /play. The map holds only what the party knows; it's
+        the same page the DM publishes elsewhere, so a bare HTML fragment
+        (no doctype) gets a minimal document wrapper here.
+
+        Args:
+            request: Starlette request object
+
+        Returns:
+            HTML response, 401 Unauthorized, or 404 if the campaign has no map
+        """
+        token = request.query_params.get("token")
+        if not token:
+            return PlainTextResponse("Missing token", status_code=401)
+        if not self.token_manager.validate_token(token):
+            return PlainTextResponse("Invalid token", status_code=401)
+
+        map_file = self._map_file()
+        if not map_file.exists():
+            return PlainTextResponse("No map for this campaign yet", status_code=404)
+
+        html = map_file.read_text(encoding="utf-8")
+        if not html.lstrip().lower().startswith("<!doctype"):
+            html = (
+                '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
+                "<style>*,*::before,*::after{box-sizing:border-box}body{margin:0}"
+                "[hidden]{display:none!important}</style></head><body>\n"
+                + html
+                + "\n</body></html>"
+            )
         return HTMLResponse(html)
 
     @staticmethod

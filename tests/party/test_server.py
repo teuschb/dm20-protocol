@@ -263,6 +263,51 @@ class TestPartyServerRoutes:
         assert response.status_code == 401
         assert "Invalid token" in response.text
 
+    def test_get_map_serves_campaign_map(self, party_server: PartyServer, campaign_dir: Path) -> None:
+        """GET /map serves maps/index.html, wrapped in a full document."""
+        (campaign_dir / "maps").mkdir()
+        (campaign_dir / "maps" / "index.html").write_text("<title>Vale</title><p>The Vale</p>")
+        client = TestClient(party_server.app)
+        token = party_server.token_manager.get_all_tokens()["aragorn"]
+
+        response = client.get(f"/map?token={token}")
+
+        assert response.status_code == 200
+        assert response.text.lower().startswith("<!doctype html>")
+        assert "<p>The Vale</p>" in response.text
+
+    def test_get_map_requires_valid_token(self, party_server: PartyServer, campaign_dir: Path) -> None:
+        """GET /map is token-gated like /play."""
+        (campaign_dir / "maps").mkdir()
+        (campaign_dir / "maps" / "index.html").write_text("<p>secret-ish</p>")
+        client = TestClient(party_server.app)
+
+        assert client.get("/map").status_code == 401
+        assert client.get("/map?token=invalid123").status_code == 401
+
+    def test_get_map_404_without_map(self, party_server: PartyServer) -> None:
+        """GET /map returns 404 when the campaign has no map yet."""
+        client = TestClient(party_server.app)
+        token = party_server.token_manager.get_all_tokens()["aragorn"]
+
+        assert client.get(f"/map?token={token}").status_code == 404
+
+    def test_play_shows_map_button_only_when_map_exists(
+        self, party_server: PartyServer, campaign_dir: Path
+    ) -> None:
+        """The player page links to /map with the player's own token, only if a map exists."""
+        client = TestClient(party_server.app)
+        token = party_server.token_manager.get_all_tokens()["aragorn"]
+
+        before = client.get(f"/play?token={token}").text
+        assert 'id="map-btn"' not in before
+        assert "{map_link}" not in before
+
+        (campaign_dir / "maps").mkdir()
+        (campaign_dir / "maps" / "index.html").write_text("<p>map</p>")
+        after = client.get(f"/play?token={token}").text
+        assert f'href="/map?token={token}"' in after
+
     def test_post_action_valid_token(self, party_server: PartyServer) -> None:
         """Test POST /action with valid token."""
         client = TestClient(party_server.app)
