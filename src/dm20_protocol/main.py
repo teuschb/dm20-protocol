@@ -661,13 +661,17 @@ def _parse_character_extras(
                     raise ValueError("recharge must be \"short\", \"long\" or null")
                 if item.get("uses_used") is not None:
                     int(item["uses_used"])
+                if item.get("short_rest_regain") is not None and int(item["short_rest_regain"]) < 1:
+                    raise ValueError("short_rest_regain must be >= 1 (or null)")
                 feats.append(item)
         except (ValueError, TypeError) as exc:
             return {}, (
                 f"add_features is not valid ({exc}). Example: "
                 "'[{\"name\": \"Improved Critical\", \"source\": \"Fighter 3 (Champion)\", "
                 "\"description\": \"...\", \"level_gained\": 3}]'. Limited uses: "
-                "'[{\"name\": \"Bardic Inspiration\", \"uses_max\": 3, \"recharge\": \"long\"}]'."
+                "'[{\"name\": \"Bardic Inspiration\", \"uses_max\": 3, \"recharge\": \"long\"}]'; "
+                "one back per short rest: '[{\"name\": \"Second Wind\", \"uses_max\": 2, "
+                "\"recharge\": \"long\", \"short_rest_regain\": 1}]'."
             )
         parsed["add_features"] = feats
 
@@ -685,6 +689,10 @@ def _apply_feature_uses(feature: "Feature", item: dict) -> None:
         feature.recharge = item["recharge"]
     if "uses_used" in item:
         feature.uses_used = max(0, int(item["uses_used"] or 0))
+    if "short_rest_regain" in item:
+        feature.short_rest_regain = (
+            None if item["short_rest_regain"] is None else int(item["short_rest_regain"])
+        )
     if feature.uses_max is None:
         feature.uses_used = 0
     else:
@@ -1344,13 +1352,23 @@ def use_feature(
     return result
 
 
-def _recharge_features(character: Character, rests: tuple[str, ...]) -> list[str]:
-    """Restore every feature whose recharge is in `rests`; return the names restored."""
+def _recharge_features(character: Character, rest: str) -> list[str]:
+    """Restore uses after a "short" or "long" rest; return a note per feature restored.
+
+    A long rest refills short- and long-rest features. A short rest refills
+    short-rest features, and gives back `short_rest_regain` uses of long-rest ones.
+    """
     restored = []
     for f in character.features:
-        if f.uses_max is not None and f.recharge in rests and f.uses_used:
+        if f.uses_max is None or not f.uses_used:
+            continue
+        if f.recharge == "short" or (f.recharge == "long" and rest == "long"):
             f.uses_used = 0
             restored.append(f.name)
+        elif f.recharge == "long" and f.short_rest_regain:
+            regained = min(f.short_rest_regain, f.uses_used)
+            f.uses_used -= regained
+            restored.append(f"{f.name} (+{regained}, {f.uses_label().split(',')[0]})")
     return restored
 
 
@@ -1366,7 +1384,7 @@ def _long_rest_logic(character: Character, restore_hp: bool = True) -> str:
         messages.append("Spell slots restored")
 
     # Limited-use features (a long rest also covers short-rest features)
-    restored = _recharge_features(character, ("short", "long"))
+    restored = _recharge_features(character, "long")
     if restored:
         messages.append("Restored: " + ", ".join(restored))
 
@@ -1424,7 +1442,7 @@ def long_rest(
 
 def _short_rest_logic(character: Character, hit_dice_to_spend: int) -> str:
     """Core logic for short rest. Testable without MCP wrapper."""
-    restored = _recharge_features(character, ("short",))
+    restored = _recharge_features(character, "short")
     restored_text = f"; restored: {', '.join(restored)}" if restored else ""
 
     if hit_dice_to_spend == 0:

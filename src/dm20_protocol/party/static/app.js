@@ -1051,6 +1051,9 @@
             if (f.uses_max !== null && f.uses_max !== undefined) {
                 var left = Math.max(0, f.uses_max - (f.uses_used || 0));
                 var tip = f.recharge ? 'Back on a ' + f.recharge + ' rest' : '';
+                if (f.recharge === 'long' && f.short_rest_regain) {
+                    tip = f.short_rest_regain + ' back on a short rest, all on a long rest';
+                }
                 html += '<span class="feature-item__uses' + (left === 0 ? ' feature-item__uses--empty' : '') +
                     '" title="' + escapeHtml(tip) + '">' + left + '/' + f.uses_max + ' left</span>';
             }

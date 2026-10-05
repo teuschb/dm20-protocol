@@ -30,8 +30,14 @@ def bardic(used: int = 0) -> Feature:
     return Feature(name="Bardic Inspiration", source="Bard 1", uses_max=3, uses_used=used, recharge="long")
 
 
+def action_surge(used: int = 0) -> Feature:
+    return Feature(name="Action Surge", source="Fighter 2", uses_max=1, uses_used=used, recharge="short")
+
+
 def second_wind(used: int = 0) -> Feature:
-    return Feature(name="Second Wind", source="Fighter 1", uses_max=2, uses_used=used, recharge="short")
+    """2024 Second Wind: two uses, one back on a short rest, all on a long rest."""
+    return Feature(name="Second Wind", source="Fighter 1", uses_max=2, uses_used=used,
+                   recharge="long", short_rest_regain=1)
 
 
 class TestFeatureModel:
@@ -95,29 +101,49 @@ class TestUseFeature:
 
 
 class TestRests:
-    def test_long_rest_restores_both_kinds(self):
-        c = make_character(bardic(3), second_wind(2))
+    def test_long_rest_restores_everything(self):
+        c = make_character(bardic(3), second_wind(2), action_surge(1))
         result = _long_rest_logic(c)
         assert all(f.uses_used == 0 for f in c.features)
-        assert "Bardic Inspiration" in result and "Second Wind" in result
+        for name in ("Bardic Inspiration", "Second Wind", "Action Surge"):
+            assert name in result
 
-    def test_short_rest_restores_only_short(self):
-        c = make_character(bardic(3), second_wind(2))
+    def test_short_rest_restores_short_features_fully(self):
+        c = make_character(bardic(3), action_surge(1))
         result = _short_rest_logic(c, 0)
         assert c.features[0].uses_used == 3
         assert c.features[1].uses_used == 0
-        assert "restored: Second Wind" in result
+        assert "restored: Action Surge" in result
+
+    def test_short_rest_gives_back_one_second_wind(self):
+        c = make_character(second_wind(2))
+        result = _short_rest_logic(c, 0)
+        assert c.features[0].uses_used == 1
+        assert "Second Wind (+1, 1/2)" in result
+        _short_rest_logic(c, 0)
+        assert c.features[0].uses_used == 0
+
+    def test_short_rest_regain_never_goes_below_zero(self):
+        c = make_character(Feature(name="Channel Divinity", source="Cleric 2", uses_max=3,
+                                   uses_used=1, recharge="long", short_rest_regain=2))
+        _short_rest_logic(c, 0)
+        assert c.features[0].uses_used == 0
+
+    def test_full_feature_not_listed_as_restored(self):
+        c = make_character(second_wind(0))
+        assert "restored" not in _short_rest_logic(c, 0)
 
     def test_short_rest_with_hit_dice_still_restores(self):
-        c = make_character(second_wind(1))
+        c = make_character(action_surge(1))
         c.hit_points_current = 10
         result = _short_rest_logic(c, 1)
         assert c.features[0].uses_used == 0
-        assert "restored: Second Wind" in result
+        assert "restored: Action Surge" in result
 
     def test_no_recharge_is_left_alone(self):
         c = make_character(Feature(name="Wish-ish", source="X", uses_max=1, uses_used=1))
         _long_rest_logic(c)
+        _short_rest_logic(c, 0)
         assert c.features[0].uses_used == 1
 
 
@@ -153,6 +179,17 @@ class TestUpdateCharacterFeatures:
     def test_bad_recharge_rejected(self):
         _, err = _parse_character_extras(None, None, json.dumps([{"name": "X", "recharge": "dawn"}]), None)
         assert err and "recharge" in err
+
+    def test_set_short_rest_regain(self):
+        c = make_character(Feature(name="Second Wind", source="Fighter 1"))
+        msgs = self.apply(c, [{"name": "Second Wind", "uses_max": 2, "recharge": "long",
+                               "short_rest_regain": 1}])
+        assert c.features[0].short_rest_regain == 1
+        assert "2/2, 1 back on short rest, all on long rest" in msgs[0]
+
+    def test_zero_short_rest_regain_rejected(self):
+        _, err = _parse_character_extras(None, None, json.dumps([{"name": "X", "short_rest_regain": 0}]), None)
+        assert err and "short_rest_regain" in err
 
     def test_negative_max_rejected(self):
         _, err = _parse_character_extras(None, None, json.dumps([{"name": "X", "uses_max": -1}]), None)

@@ -206,6 +206,9 @@ class Feature(BaseModel):
     uses_max: int | None = None
     uses_used: int = 0
     recharge: Literal["short", "long"] | None = None  # rest that restores all uses
+    # Partial short-rest recovery for long-rest features, e.g. 2024 Second Wind,
+    # Channel Divinity, Wild Shape: "regain one expended use on a Short Rest".
+    short_rest_regain: int | None = None
 
     @property
     def uses_remaining(self) -> int | None:
@@ -218,6 +221,8 @@ class Feature(BaseModel):
         if self.uses_max is None:
             return ""
         label = f"{self.uses_remaining}/{self.uses_max}"
+        if self.recharge == "long" and self.short_rest_regain:
+            return f"{label}, {self.short_rest_regain} back on short rest, all on long rest"
         return f"{label}, {self.recharge} rest" if self.recharge else label
 
 
