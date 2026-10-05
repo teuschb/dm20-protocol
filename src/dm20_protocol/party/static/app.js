@@ -1048,6 +1048,12 @@
             var li = document.createElement('li');
             li.className = 'feature-item';
             var html = '<span class="feature-item__name">' + escapeHtml(f.name) + '</span>';
+            if (f.uses_max !== null && f.uses_max !== undefined) {
+                var left = Math.max(0, f.uses_max - (f.uses_used || 0));
+                var tip = f.recharge ? 'Back on a ' + f.recharge + ' rest' : '';
+                html += '<span class="feature-item__uses' + (left === 0 ? ' feature-item__uses--empty' : '') +
+                    '" title="' + escapeHtml(tip) + '">' + left + '/' + f.uses_max + ' left</span>';
+            }
             if (f.source) {
                 html += '<span class="feature-item__source">(' + escapeHtml(f.source) + ')</span>';
             }

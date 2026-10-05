@@ -519,7 +519,14 @@ def get_character(
     spells_text = "\n".join(spells_lines) if spells_lines else "  (none)"
 
     # Build features and traits
-    features_text = "\n".join(f"  - {f}" for f in character.features_and_traits) if character.features_and_traits else "  (none)"
+    # Legacy names list, plus use counts from the structured feature of the same name
+    limited = {f.name.lower(): f for f in character.features if f.uses_max is not None}
+    feature_lines = [
+        f"  - {name}" + (_uses_suffix(limited.pop(name.lower())) if name.lower() in limited else "")
+        for name in character.features_and_traits
+    ]
+    feature_lines += [f"  - {f.name}{_uses_suffix(f)}" for f in limited.values()]
+    features_text = "\n".join(feature_lines) if feature_lines else "  (none)"
 
     # Build languages
     languages_text = ", ".join(character.languages) if character.languages else "(none)"
@@ -648,12 +655,19 @@ def _parse_character_extras(
                     item = {"name": item}
                 if not isinstance(item, dict) or not str(item.get("name", "")).strip():
                     raise ValueError("each feature needs a name")
+                if item.get("uses_max") is not None and int(item["uses_max"]) < 0:
+                    raise ValueError("uses_max must be >= 0 (or null for unlimited)")
+                if item.get("recharge") not in (None, "short", "long"):
+                    raise ValueError("recharge must be \"short\", \"long\" or null")
+                if item.get("uses_used") is not None:
+                    int(item["uses_used"])
                 feats.append(item)
         except (ValueError, TypeError) as exc:
             return {}, (
                 f"add_features is not valid ({exc}). Example: "
                 "'[{\"name\": \"Improved Critical\", \"source\": \"Fighter 3 (Champion)\", "
-                "\"description\": \"...\", \"level_gained\": 3}]'."
+                "\"description\": \"...\", \"level_gained\": 3}]'. Limited uses: "
+                "'[{\"name\": \"Bardic Inspiration\", \"uses_max\": 3, \"recharge\": \"long\"}]'."
             )
         parsed["add_features"] = feats
 
@@ -661,6 +675,25 @@ def _parse_character_extras(
         parsed["remove_features"] = _parse_json_list(remove_features)
 
     return parsed, None
+
+
+def _apply_feature_uses(feature: "Feature", item: dict) -> None:
+    """Copy uses_max / uses_used / recharge from an add_features item, keeping used <= max."""
+    if "uses_max" in item:
+        feature.uses_max = None if item["uses_max"] is None else int(item["uses_max"])
+    if "recharge" in item:
+        feature.recharge = item["recharge"]
+    if "uses_used" in item:
+        feature.uses_used = max(0, int(item["uses_used"] or 0))
+    if feature.uses_max is None:
+        feature.uses_used = 0
+    else:
+        feature.uses_used = min(feature.uses_used, feature.uses_max)
+
+
+def _uses_suffix(feature: "Feature") -> str:
+    label = feature.uses_label()
+    return f" ({label})" if label else ""
 
 
 def _apply_character_extras(character: "Character", parsed: dict) -> list[str]:
@@ -693,15 +726,18 @@ def _apply_character_extras(character: "Character", parsed: dict) -> list[str]:
             existing.source = str(item.get("source", existing.source))
             existing.description = str(item.get("description", existing.description))
             existing.level_gained = level if "level_gained" in item else existing.level_gained
-            messages.append(f"feature updated: {name}")
+            _apply_feature_uses(existing, item)
+            messages.append(f"feature updated: {name}" + _uses_suffix(existing))
         else:
-            character.features.append(Feature(
+            feature = Feature(
                 name=name,
                 source=str(item.get("source", "Manual")),
                 description=str(item.get("description", "")),
                 level_gained=level,
-            ))
-            messages.append(f"feature added: {name}")
+            )
+            _apply_feature_uses(feature, item)
+            character.features.append(feature)
+            messages.append(f"feature added: {name}" + _uses_suffix(feature))
 
     for name in parsed.get("remove_features", []):
         before = len(character.features)
@@ -1257,6 +1293,67 @@ def remove_spell(
     return result
 
 
+def _find_feature(character: Character, feature_name: str):
+    name = feature_name.strip().lower()
+    return next((f for f in character.features if f.name.lower() == name), None)
+
+
+def _use_feature_logic(character: Character, feature_name: str, amount: int = 1) -> str:
+    """Spend (amount > 0) or restore (amount < 0) uses of a limited-use feature."""
+    feature = _find_feature(character, feature_name)
+    if feature is None:
+        return f"❌ {character.name} has no feature named '{feature_name}'."
+    if feature.uses_max is None:
+        return (
+            f"❌ {feature.name} has no use limit on {character.name}'s sheet. Set one with "
+            f"update_character add_features '[{{\"name\": \"{feature.name}\", \"uses_max\": N, "
+            f"\"recharge\": \"long\"}}]'."
+        )
+    if amount == 0:
+        return f"ℹ️ {feature.name}: {feature.uses_label()}"
+    if amount > 0 and feature.uses_remaining < amount:
+        return (
+            f"❌ {character.name} has only {feature.uses_remaining} use(s) of {feature.name} left "
+            f"({feature.uses_label()})."
+        )
+    feature.uses_used = min(feature.uses_max, max(0, feature.uses_used + amount))
+    verb = "used" if amount > 0 else "regained"
+    return f"✅ {character.name} {verb} {abs(amount)} {feature.name} ({feature.uses_label()})"
+
+
+@mcp.tool
+def use_feature(
+    character_name_or_id: Annotated[str, Field(description="Character name, ID, or player name")],
+    feature_name: Annotated[str, Field(description="Feature name as on the sheet, e.g. 'Bardic Inspiration'")],
+    amount: Annotated[int, Field(description="Uses to spend (default 1). Negative restores uses; 0 just reports the count.")] = 1,
+    player_id: Annotated[str | None, Field(description="Player ID for permission check (omit for single-player DM mode)")] = None,
+) -> str:
+    """Spend or restore uses of a limited-use feature (Bardic Inspiration, Second Wind, ...).
+
+    The feature needs a use limit first: update_character add_features with
+    uses_max and recharge ("short" or "long"). Rests restore uses automatically.
+    """
+    character = storage.get_character(character_name_or_id)
+    if not character:
+        return f"❌ Character '{character_name_or_id}' not found."
+    if not permission_resolver.check_permission(player_id, "use_feature", str(character.id)):
+        return f"🔒 Permission denied: you cannot modify '{character.name}'."
+    result = _use_feature_logic(character, feature_name, amount)
+    if result.startswith("✅"):
+        storage.save()
+    return result
+
+
+def _recharge_features(character: Character, rests: tuple[str, ...]) -> list[str]:
+    """Restore every feature whose recharge is in `rests`; return the names restored."""
+    restored = []
+    for f in character.features:
+        if f.uses_max is not None and f.recharge in rests and f.uses_used:
+            f.uses_used = 0
+            restored.append(f.name)
+    return restored
+
+
 # --- Rest Mechanics ---
 
 def _long_rest_logic(character: Character, restore_hp: bool = True) -> str:
@@ -1267,6 +1364,11 @@ def _long_rest_logic(character: Character, restore_hp: bool = True) -> str:
     if character.spell_slots:
         character.spell_slots_used = {level: 0 for level in character.spell_slots}
         messages.append("Spell slots restored")
+
+    # Limited-use features (a long rest also covers short-rest features)
+    restored = _recharge_features(character, ("short", "long"))
+    if restored:
+        messages.append("Restored: " + ", ".join(restored))
 
     # 2. Restore hit dice (half of total, minimum 1)
     # hit_dice_remaining is stored as e.g. "3d10", total = total character level
@@ -1322,19 +1424,22 @@ def long_rest(
 
 def _short_rest_logic(character: Character, hit_dice_to_spend: int) -> str:
     """Core logic for short rest. Testable without MCP wrapper."""
+    restored = _recharge_features(character, ("short",))
+    restored_text = f"; restored: {', '.join(restored)}" if restored else ""
+
     if hit_dice_to_spend == 0:
-        return f"✅ {character.name} completed a short rest (no hit dice spent)"
+        return f"✅ {character.name} completed a short rest (no hit dice spent){restored_text}"
 
     # Parse hit_dice_remaining
     match = re.match(r'(\d+)d(\d+)', character.hit_dice_remaining)
     if not match:
-        return f"❌ {character.name} has no hit dice remaining."
+        return f"❌ {character.name} has no hit dice remaining.{restored_text}"
 
     remaining = int(match.group(1))
     die_size = int(match.group(2))
 
     if remaining <= 0:
-        return f"❌ {character.name} has no hit dice remaining."
+        return f"❌ {character.name} has no hit dice remaining.{restored_text}"
 
     dice_to_spend = min(hit_dice_to_spend, remaining)
     con_mod = character.abilities["constitution"].mod
@@ -1365,7 +1470,7 @@ def _short_rest_logic(character: Character, hit_dice_to_spend: int) -> str:
         f"✅ {character.name} completed a short rest: spent {dice_to_spend}d{die_size} "
         f"[{rolls_text}]{con_text} = {total_healing} healing "
         f"(HP: {old_hp} → {character.hit_points_current}/{character.hit_points_max}, "
-        f"hit dice remaining: {new_remaining}d{die_size})"
+        f"hit dice remaining: {new_remaining}d{die_size}){restored_text}"
     )
 
 

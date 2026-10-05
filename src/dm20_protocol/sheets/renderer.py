@@ -335,7 +335,8 @@ def _render_body(character: Character) -> str:
         parts.append("## Features & Traits\n")
         for feat in c.features:
             desc_preview = f" — {feat.description[:80]}..." if len(feat.description) > 80 else (f" — {feat.description}" if feat.description else "")
-            parts.append(f"- **{feat.name}** (*{feat.source}*){desc_preview}")
+            uses = f" [{feat.uses_label()}]" if feat.uses_max is not None else ""
+            parts.append(f"- **{feat.name}**{uses} (*{feat.source}*){desc_preview}")
         for trait in c.features_and_traits:
             if not any(f.name == trait for f in c.features):
                 parts.append(f"- {trait}")

@@ -1211,6 +1211,21 @@ a.mute-btn {
     margin-left: 4px;
 }
 
+.feature-item__uses {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    border: 1px solid var(--text-muted);
+    border-radius: 8px;
+    padding: 0 6px;
+    margin-left: 6px;
+}
+
+.feature-item__uses--empty {
+    color: var(--text-muted);
+    text-decoration: line-through;
+}
+
 .feature-item__desc {
     font-size: 0.78rem;
     color: var(--text-muted);

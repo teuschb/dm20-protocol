@@ -5,7 +5,7 @@ Data models for the D&D MCP Server.
 from pathlib import Path
 from datetime import datetime
 from enum import Enum
-from typing import Any, Annotated
+from typing import Any, Annotated, Literal
 from shortuuid import random
 from pydantic import BaseModel, Field, model_validator
 from logging import Handler
@@ -202,6 +202,23 @@ class Feature(BaseModel):
     source: str  # e.g., "Ranger 1", "Wood Elf", "Outlander"
     description: str = ""
     level_gained: int = 1
+    # Limited uses (Bardic Inspiration, Second Wind, ...). None = unlimited.
+    uses_max: int | None = None
+    uses_used: int = 0
+    recharge: Literal["short", "long"] | None = None  # rest that restores all uses
+
+    @property
+    def uses_remaining(self) -> int | None:
+        if self.uses_max is None:
+            return None
+        return max(0, self.uses_max - self.uses_used)
+
+    def uses_label(self) -> str:
+        """'2/3, long rest' or '' when the feature has no use limit."""
+        if self.uses_max is None:
+            return ""
+        label = f"{self.uses_remaining}/{self.uses_max}"
+        return f"{label}, {self.recharge} rest" if self.recharge else label
 
 
 class Modifier(BaseModel):
