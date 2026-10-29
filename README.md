@@ -4,6 +4,8 @@
 
 A comprehensive [Model Context Protocol](https://modelcontextprotocol.io/) server for managing AI-assisted Dungeons & Dragons campaigns, built with **FastMCP 2.9+**.
 
+> **This is a fork.** The original project is [BNDYH/dm20-protocol](https://github.com/BNDYH/dm20-protocol) by Polloinfilzato and the DM20 Protocol contributors; all credit for the server belongs to them. This fork's `larkspire` branch adds a small set of patches (party-mode UI fixes, Web Push notifications, limited-use feature tracking, SRD 2024 fixes) on top of upstream `main`. For the canonical version, issues, and releases, use the upstream repository.
+
 - **For Groups** — A toolkit to help run campaigns more effectively
 - **For Solo Players** — A complete virtual D&D experience with AI as the DM
 - **For Worldbuilders** — Tools to create rich, interconnected game worlds
@@ -376,6 +378,8 @@ This project started as a fork of [gamemaster-mcp](https://github.com/study-flam
 
 The project has since been extensively rewritten and expanded with 66 MCP tools, a multi-source rulebook system, a PDF library, the Claudmaster dual-agent AI DM, and comprehensive test coverage.
 
+This fork ([teuschb/dm20-protocol](https://github.com/teuschb/dm20-protocol)) is based on [BNDYH/dm20-protocol](https://github.com/BNDYH/dm20-protocol); see [the comparison against upstream `main`](https://github.com/BNDYH/dm20-protocol/compare/main...teuschb:dm20-protocol:larkspire) for the fork's changes.
+
 ## License
 
-MIT License
+MIT License. See [LICENSE.md](LICENSE.md).
