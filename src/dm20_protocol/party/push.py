@@ -32,6 +32,7 @@ import base64
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Optional
@@ -39,6 +40,8 @@ from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from py_vapid import Vapid
+from urllib3.exceptions import LocationParseError
+from urllib3.util import parse_url
 from pywebpush import WebPushException, webpush
 
 logger = logging.getLogger("dm20-protocol.party")
@@ -71,20 +74,39 @@ _PUSH_HOST_SUFFIXES = (
 )
 
 
+_DNS_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+# Only printable ASCII, and none of the characters parsers disagree about.
+_BAD_URL_CHARS = re.compile(r"[^\x21-\x7e]|[\\^`{}|<>\"]")
+
+
 def validate_push_endpoint(endpoint: object) -> Optional[str]:
-    """Return an error message if endpoint isn't an https URL on a known push service, else None."""
+    """Return an error message if endpoint isn't an https URL on a known push service, else None.
+
+    The URL is parsed with both urlsplit and urllib3's parse_url (the parser
+    the HTTP client behind pywebpush uses); they must agree on the host, so a
+    parser-differential trick (backslash, tab, @, unicode dots) can't make the
+    check see a push host while the request goes elsewhere.
+    """
     if not isinstance(endpoint, str):
         return "Invalid subscription: endpoint must be a string"
+    authority = re.split(r"[/?#]", endpoint.split("://", 1)[-1], maxsplit=1)[0]
+    if _BAD_URL_CHARS.search(endpoint) or "%" in authority:
+        return "Invalid subscription: endpoint contains invalid characters"
     try:
         parts = urlsplit(endpoint)
         host = (parts.hostname or "").lower()
         port = parts.port
-    except ValueError:
+        u3 = parse_url(endpoint)
+    except (ValueError, LocationParseError):
         return "Invalid subscription: endpoint is not a valid URL"
-    if parts.scheme != "https":
+    if parts.scheme != "https" or (u3.scheme or "").lower() != "https":
         return "Invalid subscription: endpoint must use https://"
-    if parts.username or parts.password or port not in (None, 443):
+    if parts.username or parts.password or u3.auth or port not in (None, 443) or u3.port not in (None, 443):
         return "Invalid subscription: endpoint must not include credentials or a custom port"
+    if host != (u3.host or "").lower():
+        return "Invalid subscription: endpoint host is ambiguous"
+    if not host.isascii() or not all(_DNS_LABEL.match(label) for label in host.split(".")):
+        return "Invalid subscription: endpoint host is not a valid DNS name"
     if not any(host == s or host.endswith("." + s) for s in _PUSH_HOST_SUFFIXES):
         return "Invalid subscription: endpoint is not a recognised Web Push service"
     return None

@@ -662,7 +662,10 @@ def _parse_character_extras(
                 if item.get("uses_used") is not None:
                     int(item["uses_used"])
                 if item.get("level_gained") is not None:
-                    level = int(item["level_gained"])
+                    raw_level = item["level_gained"]
+                    if isinstance(raw_level, bool) or not isinstance(raw_level, (int, str)):
+                        raise ValueError("level_gained must be an integer 1-20")
+                    level = int(raw_level)
                     if not 1 <= level <= 20:
                         raise ValueError("level_gained must be 1-20")
                 if item.get("short_rest_regain") is not None and int(item["short_rest_regain"]) < 1:
