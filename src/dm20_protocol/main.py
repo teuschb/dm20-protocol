@@ -661,6 +661,10 @@ def _parse_character_extras(
                     raise ValueError("recharge must be \"short\", \"long\" or null")
                 if item.get("uses_used") is not None:
                     int(item["uses_used"])
+                if item.get("level_gained") is not None:
+                    level = int(item["level_gained"])
+                    if not 1 <= level <= 20:
+                        raise ValueError("level_gained must be 1-20")
                 if item.get("short_rest_regain") is not None and int(item["short_rest_regain"]) < 1:
                     raise ValueError("short_rest_regain must be >= 1 (or null)")
                 feats.append(item)
@@ -5406,6 +5410,23 @@ def _party_tts_speak(narrative: str, server) -> None:
             logger.warning("Could not schedule TTS on server loop: %s", exc)
 
 
+def _parse_private_messages(private_messages: str | None) -> tuple[dict, str | None]:
+    """Validate the private_messages JSON used by party_push / party_resolve_action.
+
+    Returns (messages, error). Malformed JSON or a non-object value is an
+    error rather than a silently dropped whisper.
+    """
+    if not private_messages:
+        return {}, None
+    try:
+        private = json.loads(private_messages)
+    except json.JSONDecodeError as exc:
+        return {}, f"private_messages is not valid JSON ({exc})."
+    if not isinstance(private, dict):
+        return {}, "private_messages must be a JSON object of {player_id: text}."
+    return private, None
+
+
 @mcp.tool
 def party_resolve_action(
     action_id: Annotated[str, Field(description="The action_id returned by party_pop_action")],
@@ -5418,7 +5439,6 @@ def party_resolve_action(
     After processing a player action (rolling dice, narrating outcome, updating state),
     call this tool to push the response to the WebSocket broadcast queue.
     """
-    import json as _json
     from .party.server import get_server_instance
 
     server = get_server_instance()
@@ -5426,12 +5446,9 @@ def party_resolve_action(
         return "Party Mode is not running."
     _touch_dm(server)
 
-    private = {}
-    if private_messages:
-        try:
-            private = _json.loads(private_messages)
-        except _json.JSONDecodeError:
-            pass
+    private, private_error = _parse_private_messages(private_messages)
+    if private_error:
+        return f"Not resolved: {private_error}"
 
     response_data = {
         "action_id": action_id,
@@ -5474,7 +5491,6 @@ def party_push(
     (the server collapses them into one private frame) — send them separately.
     Malformed private_messages JSON is rejected with an error, not silently dropped.
     """
-    import json as _json
     from .party.server import get_server_instance
 
     server = get_server_instance()
@@ -5482,14 +5498,9 @@ def party_push(
         return "Party Mode is not running."
     _touch_dm(server)
 
-    private: dict = {}
-    if private_messages:
-        try:
-            private = _json.loads(private_messages)
-        except _json.JSONDecodeError as exc:
-            return f"Not sent: private_messages is not valid JSON ({exc})."
-        if not isinstance(private, dict):
-            return "Not sent: private_messages must be a JSON object of {player_id: text}."
+    private, private_error = _parse_private_messages(private_messages)
+    if private_error:
+        return f"Not sent: {private_error}"
 
     if not narrative.strip() and not private:
         return "Not sent: provide a narrative and/or private_messages."

@@ -50,7 +50,7 @@ from dm20_protocol.storage import DnDStorage
 
 from . import bridge
 from .auth import TokenManager, detect_host_ip
-from .push import PushKeys, PushSender, PushSubscriptionStore
+from .push import PushKeys, PushSender, PushSubscriptionStore, validate_push_endpoint
 from .queue import ActionQueue, ResponseQueue
 
 if TYPE_CHECKING:
@@ -835,6 +835,10 @@ This page is for the DM to verify the server is running.</p></body></html>"""
         keys = body.get("keys") or {}
         if not endpoint or not keys.get("p256dh") or not keys.get("auth"):
             return JSONResponse({"error": "Invalid subscription"}, status_code=400)
+
+        endpoint_error = validate_push_endpoint(endpoint)
+        if endpoint_error:
+            return JSONResponse({"error": endpoint_error}, status_code=400)
 
         self.push_store.add(player_id, {"endpoint": endpoint, "keys": keys})
         logger.info(f"Push subscription registered for {player_id}")

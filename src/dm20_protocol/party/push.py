@@ -31,15 +31,63 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from py_vapid import Vapid
 from pywebpush import WebPushException, webpush
 
 logger = logging.getLogger("dm20-protocol.party")
+
+
+# VAPID "sub" claim: a contact for the push service operator. Apple's service
+# rejects non-routable values such as mailto:dm@localhost, so the default is a
+# syntactically valid address. Override with DM20_VAPID_SUBJECT (mailto: or https:).
+DEFAULT_VAPID_SUBJECT = "mailto:dm20-party@example.com"
+
+
+def get_vapid_subject() -> str:
+    """The VAPID contact claim: DM20_VAPID_SUBJECT if valid, else the default."""
+    value = os.environ.get("DM20_VAPID_SUBJECT", "").strip()
+    if not value:
+        return DEFAULT_VAPID_SUBJECT
+    if value.startswith("mailto:") and len(value) > len("mailto:") or value.startswith("https://"):
+        return value
+    logger.warning("Ignoring DM20_VAPID_SUBJECT=%r: must start with mailto: or https://", value)
+    return DEFAULT_VAPID_SUBJECT
+
+
+# Hosts of the browser vendors' Web Push services. A subscription endpoint is a
+# URL the server will POST to, so anything else would be an SSRF vector.
+_PUSH_HOST_SUFFIXES = (
+    "fcm.googleapis.com",          # Chrome / Edge / Android (FCM)
+    "push.services.mozilla.com",   # Firefox (autopush; also updates.push.services.mozilla.com)
+    "push.apple.com",              # Safari / iOS (web.push.apple.com)
+    "notify.windows.com",          # Windows WNS (*.notify.windows.com)
+)
+
+
+def validate_push_endpoint(endpoint: object) -> Optional[str]:
+    """Return an error message if endpoint isn't an https URL on a known push service, else None."""
+    if not isinstance(endpoint, str):
+        return "Invalid subscription: endpoint must be a string"
+    try:
+        parts = urlsplit(endpoint)
+        host = (parts.hostname or "").lower()
+        port = parts.port
+    except ValueError:
+        return "Invalid subscription: endpoint is not a valid URL"
+    if parts.scheme != "https":
+        return "Invalid subscription: endpoint must use https://"
+    if parts.username or parts.password or port not in (None, 443):
+        return "Invalid subscription: endpoint must not include credentials or a custom port"
+    if not any(host == s or host.endswith("." + s) for s in _PUSH_HOST_SUFFIXES):
+        return "Invalid subscription: endpoint is not a recognised Web Push service"
+    return None
 
 
 class PushKeys:
@@ -153,7 +201,7 @@ class PushSender:
                 subscription_info=sub,
                 data=json.dumps(payload),
                 vapid_private_key=self._keys.vapid,
-                vapid_claims={"sub": "mailto:dm@localhost"},
+                vapid_claims={"sub": get_vapid_subject()},
             )
             return True
         except WebPushException as exc:
@@ -179,4 +227,4 @@ class PushSender:
         return sent
 
 
-__all__ = ["PushKeys", "PushSubscriptionStore", "PushSender"]
+__all__ = ["PushKeys", "PushSubscriptionStore", "PushSender", "validate_push_endpoint", "get_vapid_subject"]

@@ -749,6 +749,15 @@
     // push subscription, nothing wakes that SW while the page isn't running.
     // Best-effort: browsers without Push API support (or with it disabled)
     // silently keep the old tab-title/live-socket fallback instead.
+    // Let the service worker reopen this player's /play?token=... link when a
+    // notification is tapped with no game tab open (sw.js reads this cache).
+    function rememberPlayUrl() {
+        if (!window.caches) return;
+        caches.open('dm20-play-url').then(function (c) {
+            return c.put('/__play-url', new Response(window.location.pathname + window.location.search));
+        }).catch(function () { /* best effort */ });
+    }
+
     function subscribeForPush(reg) {
         if (!reg || !reg.pushManager || !VAPID_PUBLIC_KEY) return;
         reg.pushManager.subscribe({
@@ -762,6 +771,7 @@
             });
         }).then(function (res) {
             pushSubscribed = !!(res && res.ok);
+            if (pushSubscribed) rememberPlayUrl();
         }).catch(function (e) {
             console.error('Push subscribe failed:', e);
         });

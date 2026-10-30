@@ -62,3 +62,17 @@ def test_bad_input_is_rejected_before_any_change():
                {"add_features": "{}"}, {"add_features": '[{"description": "x"}]'}):
         parsed, err = _parse_character_extras(None, kw.get("spell_slots"), kw.get("add_features"), None)
         assert err and parsed == {}
+
+
+def test_bad_level_gained_is_rejected_in_parse_step():
+    for bad in ('"abc"', "0", "21", "[3]", "{}"):
+        parsed, err = _parse_character_extras(
+            None, None, '[{"name": "Fine"}, {"name": "X", "level_gained": %s}]' % bad, None)
+        assert err is not None and "add_features is not valid" in err, bad
+        assert parsed == {}
+
+
+def test_valid_level_gained_applies():
+    c = _char()
+    _run(c, add_features='[{"name": "Channel Divinity", "level_gained": "2"}]')
+    assert next(f for f in c.features if f.name == "Channel Divinity").level_gained == 2
