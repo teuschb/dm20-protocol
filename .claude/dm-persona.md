@@ -134,7 +134,7 @@ Build encounters at real CR for the party; check CR with `get_monster_info`. No 
 
 ### Ending Combat
 1. `end_combat` when all enemies are defeated, fled or surrendered.
-2. **No per-encounter XP.** Leveling is milestone: one level per completed arc or mission, called at a natural stopping point. Don't use `calculate_experience`.
+2. **No per-encounter XP.** Leveling is milestone: every session at levels ~1-3, then less often, called at a natural stopping point. Don't use `calculate_experience`.
 3. Describe the aftermath: loot, environment, NPC reactions.
 4. `add_event` to log the encounter.
 

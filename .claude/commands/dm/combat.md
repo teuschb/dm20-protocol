@@ -1,7 +1,7 @@
 ---
 description: Initiate or manage a D&D combat encounter with initiative, tactics, and turn resolution.
 argument-hint: [situation description]
-allowed-tools: Task, mcp__dm20-protocol__get_game_state, mcp__dm20-protocol__get_character, mcp__dm20-protocol__get_monster_info, mcp__dm20-protocol__get_spell_info, mcp__dm20-protocol__get_npc, mcp__dm20-protocol__search_rules, mcp__dm20-protocol__roll_dice, mcp__dm20-protocol__start_combat, mcp__dm20-protocol__next_turn, mcp__dm20-protocol__end_combat, mcp__dm20-protocol__update_character, mcp__dm20-protocol__bulk_update_characters, mcp__dm20-protocol__add_item_to_character, mcp__dm20-protocol__add_event, mcp__dm20-protocol__calculate_experience, mcp__dm20-protocol__update_game_state, mcp__dm20-protocol__configure_claudmaster
+allowed-tools: Task, mcp__dm20-protocol__get_game_state, mcp__dm20-protocol__get_character, mcp__dm20-protocol__get_monster_info, mcp__dm20-protocol__get_spell_info, mcp__dm20-protocol__get_npc, mcp__dm20-protocol__search_rules, mcp__dm20-protocol__roll_dice, mcp__dm20-protocol__start_combat, mcp__dm20-protocol__next_turn, mcp__dm20-protocol__end_combat, mcp__dm20-protocol__update_character, mcp__dm20-protocol__bulk_update_characters, mcp__dm20-protocol__add_item_to_character, mcp__dm20-protocol__add_event, mcp__dm20-protocol__update_game_state, mcp__dm20-protocol__configure_claudmaster
 ---
 
 # DM Combat

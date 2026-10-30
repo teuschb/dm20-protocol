@@ -449,6 +449,8 @@ uv tool upgrade dm20-protocol
 ```
 
 > **Note:** `uv tool upgrade` alone does NOT update the `/dm:*` slash commands or DM persona file. These live outside the Python package in your play directory's `.claude/` folder. Use `--upgrade` to update everything.
+>
+> **Existing installs:** the installer copies with `cp -n`, so an existing `.claude/dm-persona.md` is never overwritten by a normal install. If you installed before the DM persona rewrite, run `--upgrade` or re-copy `.claude/dm-persona.md` and `.claude/commands/dm/` from the repo.
 
 ### Developer mode
 
