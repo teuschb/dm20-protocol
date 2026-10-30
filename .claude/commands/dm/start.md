@@ -334,6 +334,22 @@ Call `create_character()` for each with:
 
 Save the AI companion character IDs in game_state notes: `ai_companions:[id1,id2,...]`
 
+### 3d. Campaign Arc (required before session 1)
+
+The arc lives at `campaigns/<campaign name>/CAMPAIGN_ARC.md` inside the dm20 storage directory (`$DM20_STORAGE_DIR` if set, otherwise the play directory), next to `campaign.json`. Check for it with Read. It is DM-only: never quote it in narration or `game_state.notes`, and never show it to the player unless they ask.
+
+- **Missing, or still has placeholders (`<...>`, `_(...)_`) or empty sections:** write it now, before narrating anything. Build it from the campaign description and each PC's backstory, sized to the level range the table expects. If the player wants to be surprised, write it without showing them and just say it's done. Sections:
+  1. Arc name and level range; the hidden truth in one paragraph.
+  2. Why it fits the tone and guardrails.
+  3. The layers the party uncovers, in order.
+  4. Cast: each NPC's want, flaw, secret.
+  5. Session-by-session **menu, not a rail**: for each story beat, the part that must land plus several doors into it. The party picks the door.
+  6. The clock: one step per session the party doesn't interfere, and what happens at the end.
+  7. At least 3 valid endings.
+  8. Chapter closes: for each chapter, the scene or revelation that ends it, what has changed, and the hook into the next.
+  9. Running notes.
+- **Exists and filled:** read it before Step 4. On a resumed campaign, this comes before the recap.
+
 ### 4. Check for Existing Session
 
 Check if there's a paused session to resume:
@@ -347,7 +363,7 @@ Check if there's a paused session to resume:
 4. Deliver a "Previously..." recap woven into narrative (not a bullet list)
 5. Re-establish the scene where they left off
 
-**If new session (no previous sessions):**
+**If new session (no previous sessions):** the arc from Step 3d must exist first.
 1. `start_claudmaster_session(campaign_name="...")` to initialize
 2. `get_location` for the starting location
 3. Set the opening scene with a vivid description

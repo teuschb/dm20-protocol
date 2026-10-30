@@ -90,4 +90,4 @@ When a PC drops to 0 HP:
 2. **State before story.** Update HP and conditions via tools before narrating the result.
 3. **Narrate combat cinematically.** Each attack gets a brief description — not just numbers.
 4. **Keep pace.** Combat should feel fast. Minimize between-turn narration on enemy turns.
-5. **Fair but fun.** Apply rules consistently. Use `fudge_rolls` setting only for dramatic moments, never to negate player agency.
+5. **Fair.** Apply rules consistently. Never adjust a rolled result, and never reveal DCs. The player can lose.
