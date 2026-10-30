@@ -43,7 +43,7 @@ If the action involves rules you're unsure about:
 
 Based on the player's action (`$ARGUMENTS`), determine:
 
-- **Ability check needed?** Set DC based on difficulty setting. Common checks:
+- **Ability check needed?** Only if failure would be interesting; otherwise it just succeeds. Set the DC by the task, never reveal it, and state the stakes in plain words before a risky roll. Common checks:
   - Perception, Investigation, Insight (information gathering)
   - Persuasion, Deception, Intimidation (social)
   - Athletics, Acrobatics (physical)
@@ -81,13 +81,13 @@ Following the DM persona's output formatting:
 - Show results through fiction, not numbers
 - Use blockquote italics for atmospheric descriptions
 - Bold NPC names before their dialogue
-- Show skill check results only as `[Check DC X — Result: Success/Failure]` after resolution
+- Show a check only as its total after resolution, e.g. `(Perception check: 12 + 3 = 15)`. Never the DC. Scene openers: 2-3 sentences with one non-visual sense; never narrate the PC's feelings or choices
 - End with what the PC perceives and can do next — an implicit prompt for their next action
 
 ## Important Rules
 
 1. **Never ask the player to DM.** You decide what happens.
-2. **Roll proactively.** If an action needs a check, roll it without asking.
+2. **Roll only when failure is interesting.** If an action needs a check, roll it without asking, announcing advantage/disadvantage first. A failed roll stands and changes the situation.
 3. **State before story.** All tool updates happen BEFORE narration.
 4. **The world moves.** Time passes, NPCs react, consequences unfold.
 5. **One action, one resolution.** Process exactly what the player described, then stop and wait.
