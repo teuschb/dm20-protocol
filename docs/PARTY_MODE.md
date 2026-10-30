@@ -231,6 +231,14 @@ LAN discovery: the web server could optionally broadcast via mDNS (`dm20-party.l
 | PC/Mac | Full | Keyboard input, multi-window |
 | Smart TV | Read-only | Could display shared narrative on a big screen |
 
+### Web Push Notifications
+
+Players can enable "Notify me" to get a notification when the DM replies, even with the tab closed. The server sends these directly to the browser vendor's push service (FCM, Mozilla autopush, Apple `web.push.apple.com`, Windows WNS) using VAPID keys generated once under the campaign's `party/` folder. Subscription endpoints on any other host (or without `https://`) are rejected.
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `DM20_VAPID_SUBJECT` | `mailto:dm20-party@example.com` | VAPID contact claim (`mailto:` or `https:` URL). Set this to a real address you control: Apple's push service may reject placeholder or non-routable values such as `mailto:dm@localhost`. |
+
 ### New Commands (Phase 2A)
 
 | Command | Description |

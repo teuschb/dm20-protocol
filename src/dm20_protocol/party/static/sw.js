@@ -27,11 +27,31 @@ self.addEventListener('push', function (e) {
     );
 });
 
+// app.js stores the player's own /play?token=... URL in this cache after it
+// subscribes, so a notification tapped with no tab open can reopen the game.
+var PLAY_URL_CACHE = 'dm20-play-url';
+var PLAY_URL_KEY = '/__play-url';
+
+function storedPlayUrl() {
+    return caches.open(PLAY_URL_CACHE)
+        .then(function (c) { return c.match(PLAY_URL_KEY); })
+        .then(function (r) { return r ? r.text() : null; })
+        .catch(function () { return null; })
+        .then(function (u) {
+            // same-origin /play paths only
+            return (u && u.indexOf('/play') === 0) ? u : '/play';
+        });
+}
+
 self.addEventListener('notificationclick', function (e) {
     e.notification.close();
     e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
         for (var i = 0; i < list.length; i++) {
             if (list[i].url.indexOf('/play') !== -1 && 'focus' in list[i]) return list[i].focus();
+        }
+        // No game tab open: open one with the player's token.
+        if (self.clients.openWindow) {
+            return storedPlayUrl().then(function (url) { return self.clients.openWindow(url); });
         }
     }));
 });

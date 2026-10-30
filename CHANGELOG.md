@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Party Mode fixes** — `party_resolve_action` now rejects malformed or non-object `private_messages` instead of silently dropping the whisper (shared `_parse_private_messages` with `party_push`); `update_character` validates `add_features[].level_gained` before applying anything; `/push/subscribe` accepts only `https://` endpoints on known Web Push hosts (SSRF); the service worker reopens `/play` with the player's token when a notification is tapped with no tab open; the VAPID `sub` claim is configurable via `DM20_VAPID_SUBJECT` and no longer `mailto:dm@localhost`
 - **Inconsistent MCP tool parameter names** — `apply_effect` and `remove_effect` used `character_name` while all other character tools used `character_name_or_id`, causing AI callers to mix up parameter names. Renamed to `character_name_or_id` for consistency
 - **`add_item_to_character` item_type too restrictive** — `item_type` was a `Literal["weapon", "armor", "consumable", "misc"]` but the `Item` model accepts any string. Changed to `str` so AI callers can use values like `"treasure"`, `"tool"`, `"quest"`, etc.
 - **PreCompact hook type wrong** — Hook was using `"type": "prompt"` which is not supported by the `PreCompact` event (command-only). Changed to `"type": "command"` in both `settings.local.json` and installer templates. Upgrade now also detects and replaces the old broken prompt-type hook
