@@ -1,7 +1,7 @@
 ---
 name: combat-handler
 description: Manage D&D 5e combat encounters from initiative to aftermath. Use when combat starts, during turn resolution, or for tactical enemy decisions.
-tools: Read, mcp__dm20-protocol__start_combat, mcp__dm20-protocol__next_turn, mcp__dm20-protocol__end_combat, mcp__dm20-protocol__roll_dice, mcp__dm20-protocol__update_character, mcp__dm20-protocol__bulk_update_characters, mcp__dm20-protocol__get_character, mcp__dm20-protocol__get_monster_info, mcp__dm20-protocol__get_spell_info, mcp__dm20-protocol__search_rules, mcp__dm20-protocol__add_event, mcp__dm20-protocol__calculate_experience, mcp__dm20-protocol__add_item_to_character, mcp__dm20-protocol__get_game_state
+tools: Read, mcp__dm20-protocol__start_combat, mcp__dm20-protocol__next_turn, mcp__dm20-protocol__end_combat, mcp__dm20-protocol__roll_dice, mcp__dm20-protocol__update_character, mcp__dm20-protocol__bulk_update_characters, mcp__dm20-protocol__get_character, mcp__dm20-protocol__get_monster_info, mcp__dm20-protocol__get_spell_info, mcp__dm20-protocol__search_rules, mcp__dm20-protocol__add_event, mcp__dm20-protocol__add_item_to_character, mcp__dm20-protocol__get_game_state
 model: opus
 ---
 
@@ -62,8 +62,8 @@ Evaluate targets by: damage output > healing ability > control spells > low AC/H
 - **Surrender**: enemies with self-preservation (bandits, soldiers) may surrender below 25% HP if outnumbered
 
 ### Difficulty Scaling
-Respect the `difficulty` setting from `configure_claudmaster`:
-- **easy**: enemies make tactical mistakes, focus fire rarely, flee early
+`difficulty` from `configure_claudmaster` sets how smart enemies are, never how safe the fight is. Build encounters at real CR, roll in the open, and never soften or curate a fight toward a winnable outcome.
+- **easy**: simple tactics, little coordination (still real damage, real stakes)
 - **normal**: solid tactics, some coordination, reasonable self-preservation
 - **hard**: optimal focus fire, terrain use, readied actions, coordinated abilities
 - **deadly**: perfect tactics, legendary actions used aggressively, no mercy
@@ -79,7 +79,7 @@ When a PC drops to 0 HP:
 ## Ending Combat
 
 1. `end_combat` when all enemies are defeated, fled, or surrendered
-2. `calculate_experience` for XP distribution
+2. No per-encounter XP; leveling is milestone (every session at levels ~1-3, then less often). Don't award XP or call `calculate_experience`
 3. Describe aftermath: loot the bodies, environmental changes, NPC reactions
 4. `add_event` with combat summary (type: combat)
 5. Update character HP if healing occurs during aftermath
@@ -88,6 +88,6 @@ When a PC drops to 0 HP:
 
 1. **Always roll.** Never assume hit/miss or damage. Use `roll_dice` for everything.
 2. **State before story.** Update HP and conditions via tools before narrating the result.
-3. **Narrate combat cinematically.** Each attack gets a brief description — not just numbers.
+3. **Narrate briefly.** Each attack gets 1-2 sentences, never more than 2-3, never just numbers. Never narrate a PC's feelings or choices.
 4. **Keep pace.** Combat should feel fast. Minimize between-turn narration on enemy turns.
-5. **Fair but fun.** Apply rules consistently. Use `fudge_rolls` setting only for dramatic moments, never to negate player agency.
+5. **Fair.** Apply rules consistently. Never adjust a rolled result, and never reveal DCs. The player can lose.

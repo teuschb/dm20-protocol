@@ -1,7 +1,7 @@
 ---
 description: Initiate or manage a D&D combat encounter with initiative, tactics, and turn resolution.
 argument-hint: [situation description]
-allowed-tools: Task, mcp__dm20-protocol__get_game_state, mcp__dm20-protocol__get_character, mcp__dm20-protocol__get_monster_info, mcp__dm20-protocol__get_spell_info, mcp__dm20-protocol__get_npc, mcp__dm20-protocol__search_rules, mcp__dm20-protocol__roll_dice, mcp__dm20-protocol__start_combat, mcp__dm20-protocol__next_turn, mcp__dm20-protocol__end_combat, mcp__dm20-protocol__update_character, mcp__dm20-protocol__bulk_update_characters, mcp__dm20-protocol__add_item_to_character, mcp__dm20-protocol__add_event, mcp__dm20-protocol__calculate_experience, mcp__dm20-protocol__update_game_state, mcp__dm20-protocol__configure_claudmaster
+allowed-tools: Task, mcp__dm20-protocol__get_game_state, mcp__dm20-protocol__get_character, mcp__dm20-protocol__get_monster_info, mcp__dm20-protocol__get_spell_info, mcp__dm20-protocol__get_npc, mcp__dm20-protocol__search_rules, mcp__dm20-protocol__roll_dice, mcp__dm20-protocol__start_combat, mcp__dm20-protocol__next_turn, mcp__dm20-protocol__end_combat, mcp__dm20-protocol__update_character, mcp__dm20-protocol__bulk_update_characters, mcp__dm20-protocol__add_item_to_character, mcp__dm20-protocol__add_event, mcp__dm20-protocol__update_game_state, mcp__dm20-protocol__configure_claudmaster
 ---
 
 # DM Combat
@@ -81,7 +81,7 @@ next_turn()
 Decide and execute each enemy's action. Follow the Combat Protocol from the DM persona:
 
 - **Threat assessment**: target the biggest threat (healers, casters, low-HP targets)
-- **Tactical behavior**: based on creature type (brute, ranged, spellcaster, leader, beast)
+- **Tactical behavior**: based on creature type (brute, ranged, spellcaster, leader, beast); every enemy has a goal and a retreat or surrender condition, none fights to the death by default
 - **Situational awareness**: use terrain, focus fire, ready actions, retreat when outmatched
 
 Scale tactics to the `difficulty` setting:
@@ -108,7 +108,7 @@ Narrate enemy actions concisely: `[Round N — Enemy Name]` then brief narrative
 When all enemies are defeated, fled, or surrendered:
 
 1. `end_combat()`
-2. `calculate_experience(party_size=N, party_level=N, encounter_xp=N)` — narrate XP gain
+2. No per-encounter XP: leveling is milestone, so don't call `calculate_experience`
 3. Describe aftermath: bodies, loot, environmental changes
 4. `add_event(event_type="combat", title="...", description="...")` — log the encounter
 5. If loot is found: `add_item_to_character` for each item
@@ -130,6 +130,6 @@ When a PC drops to 0 HP:
 
 1. **Always roll dice.** Never assume outcomes.
 2. **State before story.** Update HP via tools before narrating damage.
-3. **Keep pace.** Enemy turns should be fast — decide, roll, narrate in 2-3 sentences.
-4. **Fair combat.** Rules apply consistently. The player can lose.
+3. **Keep pace.** Enemy turns should be fast — decide, roll, narrate briefly.
+4. **Fair combat.** Rules apply consistently. The player can lose. Before applying any enemy attack a PC could react to (Shield, opportunity attacks), ask the player with the bare totals and hold the result; never treat a reaction as declined.
 5. **One player turn at a time.** After resolving the player's turn, execute all enemy turns, then prompt the player again.
