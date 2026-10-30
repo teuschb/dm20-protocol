@@ -15,7 +15,7 @@ from dm20_protocol.sheets.renderer import CharacterSheetRenderer
 
 def make_character(*features: Feature) -> Character:
     return Character(
-        name="Lou",
+        name="Bardchar",
         character_class=CharacterClass(name="Bard", level=3, hit_dice="3d8"),
         race=Race(name="Elf"),
         hit_points_max=21,
