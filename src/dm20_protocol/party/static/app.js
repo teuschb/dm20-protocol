@@ -255,6 +255,8 @@
                 // fix 15: server collapses narrative+private resolves into a
                 // single 'private' frame and never sends the narrative
                 // separately — render it here too (dedups on id, skips blank).
+                // fix 19: a private-only resolve must clear the thinking bubble too.
+                hideThinkingIndicator();
                 if (((msg.narrative || '') + '').trim()) {
                     addNarrativeMessage(msg);
                 }
@@ -422,6 +424,8 @@
     function addNarrativeMessage(msg) {
         // fix 13: a resolve whose only purpose was a private_messages reply
         // comes through with a blank narrative — don't render an empty bubble.
+        // fix 19: but still clear the thinking bubble (it was left stuck).
+        hideThinkingIndicator();
         if (!((msg.content || msg.narrative || '').trim())) return;
         if (msg.id) {
             if (renderedMsgIds[msg.id]) return;
