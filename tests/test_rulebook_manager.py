@@ -661,3 +661,104 @@ class TestThreadSafety:
 
         assert len(errors) == 0
         assert len(results) == 400  # 4 threads * 100 queries each
+
+
+class TestManifestCustomSources:
+    """Custom sources must survive a manifest round trip (issue #3)."""
+
+    @staticmethod
+    def _write_custom(path: Path, name: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "$schema": "dm20-protocol/rulebook-v1",
+            "name": name,
+            "version": "1.0",
+            "content": {
+                "feats": [{"index": f"{name}-feat", "name": f"{name} Feat", "desc": ["x"]}],
+            },
+        }))
+        return path
+
+    @staticmethod
+    def _srd_patch():
+        """Patch SRDSource with a MockSource so no network is used."""
+        import dm20_protocol.rulebooks.sources.srd as srd_module
+
+        def factory(version="2014", cache_dir=None):
+            src = MockSource(f"srd-{version}")
+            src.source_type = RulebookSource.SRD
+            src.version = version
+            return src
+
+        return patch.object(srd_module, "SRDSource", side_effect=factory)
+
+    def test_round_trip_keeps_custom_sources_and_priority(self, tmp_path):
+        from dm20_protocol.rulebooks.sources.custom import CustomSource
+
+        rb = tmp_path / "rulebooks"
+        a = self._write_custom(rb / "custom" / "alpha.json", "alpha")
+        b = self._write_custom(rb / "custom" / "beta.json", "beta")
+        manifest_path = rb / "manifest.json"
+
+        async def run_test():
+            with self._srd_patch():
+                manager = await RulebookManager.with_srd(campaign_dir=tmp_path, version="2024")
+                await manager.load_source(CustomSource(a))
+                await manager.load_source(CustomSource(b))
+                order = ["srd-2024", "custom-beta", "custom-alpha"]
+                manager.set_priority(order)
+                before = manifest_path.read_bytes()
+
+                data = json.loads(before)
+                paths = {s["id"]: s.get("path") for s in data["active_sources"]}
+                assert paths["custom-alpha"] == "custom/alpha.json"
+                assert paths["custom-beta"] == "custom/beta.json"
+
+                restored = await RulebookManager.from_manifest(tmp_path)
+
+            assert set(restored.source_ids) == {"srd-2024", "custom-alpha", "custom-beta"}
+            assert restored.priority == order
+            assert manifest_path.read_bytes() == before
+            assert restored.get_feat("beta-feat") is not None
+
+        run_async(run_test())
+
+    def test_missing_custom_file_is_skipped_with_warning(self, tmp_path, caplog):
+        from dm20_protocol.rulebooks.sources.custom import CustomSource
+
+        rb = tmp_path / "rulebooks"
+        a = self._write_custom(rb / "custom" / "alpha.json", "alpha")
+        b = self._write_custom(rb / "custom" / "beta.json", "beta")
+
+        async def run_test():
+            with self._srd_patch():
+                manager = await RulebookManager.with_srd(campaign_dir=tmp_path, version="2024")
+                await manager.load_source(CustomSource(a))
+                await manager.load_source(CustomSource(b))
+                a.unlink()
+
+                with caplog.at_level("WARNING"):
+                    restored = await RulebookManager.from_manifest(tmp_path)
+
+            assert set(restored.source_ids) == {"srd-2024", "custom-beta"}
+            assert restored.priority == ["srd-2024", "custom-beta"]
+            assert "custom-alpha" in caplog.text
+
+        run_async(run_test())
+
+    def test_path_outside_rulebooks_is_stored_absolute(self, tmp_path):
+        from dm20_protocol.rulebooks.sources.custom import CustomSource
+
+        outside = self._write_custom(tmp_path / "elsewhere" / "gamma.json", "gamma")
+        campaign = tmp_path / "campaign"
+
+        async def run_test():
+            manager = RulebookManager(campaign)
+            await manager.load_source(CustomSource(outside))
+            data = json.loads((campaign / "rulebooks" / "manifest.json").read_text())
+            assert data["active_sources"][0]["path"] == str(outside.resolve())
+
+            restored = await RulebookManager.from_manifest(campaign)
+            assert restored.source_ids == ["custom-gamma"]
+
+        run_async(run_test())
