@@ -126,6 +126,7 @@ class RulebookManager:
         self._priority: list[str] = []
         self._lock = RLock()
         self._manifest_dir: Path | None = None
+        self._restoring = False  # True while from_manifest() rebuilds sources
 
         if campaign_dir:
             self._manifest_dir = campaign_dir / "rulebooks"
@@ -415,7 +416,7 @@ class RulebookManager:
         library bindings when the campaign loads.
         """
         manifest_path = self._get_manifest_path()
-        if not manifest_path:
+        if not manifest_path or self._restoring:
             return
 
         # Filter out library sources - they are managed by library bindings
@@ -477,14 +478,32 @@ class RulebookManager:
                 loaded_at=loaded_at,
             )
         else:
-            # Custom source
-            path = getattr(source, "file_path", None)
+            # Custom source: CustomSource keeps its file in `.path`.
+            path = getattr(source, "path", None)
             return SourceConfig(
                 id=source.source_id,
                 type="custom",
                 loaded_at=loaded_at,
-                path=str(path) if path else None,
+                path=self._path_for_manifest(Path(path)) if path else None,
             )
+
+    def _path_for_manifest(self, path: Path) -> str:
+        """Store a path relative to the campaign's rulebooks/ dir when it lives
+        inside it, so the campaign folder can move; otherwise store it absolute."""
+        path = Path(path)
+        if self._manifest_dir:
+            try:
+                return path.resolve().relative_to(self._manifest_dir.resolve()).as_posix()
+            except ValueError:
+                pass
+        return str(path.resolve())
+
+    def _path_from_manifest(self, stored: str) -> Path:
+        """Resolve a manifest path back to a file (inverse of _path_for_manifest)."""
+        path = Path(stored)
+        if not path.is_absolute() and self._manifest_dir:
+            path = self._manifest_dir / path
+        return path
 
     # =========================================================================
     # Factory Methods
@@ -537,13 +556,41 @@ class RulebookManager:
                 f"No manifest found at {campaign_dir / 'rulebooks' / 'manifest.json'}"
             )
 
-        for source_config in manifest.active_sources:
-            source = await manager._create_source_from_config(source_config)
-            await manager.load_source(source)
+        # Restoring must not rewrite the manifest: load_source() saves after
+        # every source, which would persist a partial list mid-restore (and
+        # drop any entry we have to skip). Saves resume once restore is done.
+        manager._restoring = True
+        try:
+            for source_config in manifest.active_sources:
+                if source_config.type == "custom" and source_config.path:
+                    file_path = manager._path_from_manifest(source_config.path)
+                    if not file_path.exists():
+                        logger.warning(
+                            f"Custom rulebook {source_config.id} not found at "
+                            f"{file_path}; skipping it"
+                        )
+                        continue
+                try:
+                    source = await manager._create_source_from_config(source_config)
+                    await manager.load_source(source)
+                except Exception as e:
+                    logger.warning(f"Skipping rulebook {source_config.id}: {e}")
+                    continue
+                # Keep the original timestamp so later saves don't churn it.
+                try:
+                    source.loaded_at = datetime.fromisoformat(source_config.loaded_at)
+                except (TypeError, ValueError):
+                    pass
 
-        # Restore priority order
-        if manifest.priority:
-            manager._priority = manifest.priority
+            # Restore priority order, limited to what actually loaded.
+            if manifest.priority:
+                with manager._lock:
+                    loaded = set(manager._sources)
+                    restored = [sid for sid in manifest.priority if sid in loaded]
+                    restored += [sid for sid in manager._priority if sid not in restored]
+                    manager._priority = restored
+        finally:
+            manager._restoring = False
 
         return manager
 
@@ -572,7 +619,7 @@ class RulebookManager:
 
             if not config.path:
                 raise RulebookManagerError(f"Custom source {config.id} missing path")
-            return CustomSource(Path(config.path), source_id=config.id)
+            return CustomSource(self._path_from_manifest(config.path), source_id=config.id)
 
         else:
             raise RulebookManagerError(f"Unknown source type: {config.type}")
