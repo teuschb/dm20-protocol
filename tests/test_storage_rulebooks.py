@@ -393,3 +393,62 @@ class TestRulebookManagerErrorHandling:
 
         # Manager might be None or partially loaded depending on error handling
         # The important thing is the campaign loads
+
+
+class TestRulebookManagerLoadFromWorkerThread:
+    """load_campaign runs on FastMCP's AnyIO worker thread, which has no event loop."""
+
+    @staticmethod
+    def _campaign_with_custom_manifest(storage: DnDStorage, temp_storage_dir: Path) -> None:
+        storage.create_campaign(name="Threaded", description="Test", dm_name="DM")
+        rulebooks_dir = temp_storage_dir / "campaigns" / "Threaded" / "rulebooks"
+        (rulebooks_dir / "custom" / "overlay.json").write_text(json.dumps({
+            "$schema": "dm20-protocol/rulebook-v1",
+            "name": "overlay",
+            "version": "1.0",
+            "content": {"feats": [{"index": "lantern-warden", "name": "Lantern Warden", "desc": ["x"]}]},
+        }))
+        (rulebooks_dir / "manifest.json").write_text(json.dumps({
+            "active_sources": [{
+                "id": "custom-overlay", "type": "custom",
+                "path": "custom/overlay.json", "loaded_at": "2026-11-01T00:00:00",
+            }],
+            "priority": ["custom-overlay"],
+            "conflict_resolution": "last_wins",
+        }))
+
+    def test_load_campaign_on_a_thread_without_an_event_loop(
+        self, storage: DnDStorage, temp_storage_dir: Path
+    ) -> None:
+        import threading
+
+        self._campaign_with_custom_manifest(storage, temp_storage_dir)
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                storage.load_campaign("Threaded")
+            except BaseException as e:  # pragma: no cover - surfaced below
+                errors.append(e)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=60)
+        assert not errors
+        manager = storage.rulebook_manager
+        assert manager is not None
+        assert manager.get_feat("lantern-warden") is not None
+
+    def test_load_campaign_inside_a_running_loop(
+        self, storage: DnDStorage, temp_storage_dir: Path
+    ) -> None:
+        import asyncio
+
+        self._campaign_with_custom_manifest(storage, temp_storage_dir)
+
+        async def inside() -> None:
+            storage.load_campaign("Threaded")
+
+        asyncio.run(inside())
+        assert storage.rulebook_manager is not None
+        assert storage.rulebook_manager.get_feat("lantern-warden") is not None

@@ -4,6 +4,7 @@ Handles persistence of campaign data to JSON files.
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import shutil
 import shortuuid
@@ -41,6 +42,37 @@ class StorageFormat:
     MONOLITHIC = "monolithic"  # Single JSON file per campaign
     SPLIT = "split"           # Directory with separate JSON files
     NOT_FOUND = "not_found"   # Campaign doesn't exist yet
+
+
+def _run_coroutine_sync(make_coro):
+    """Run a coroutine to completion from synchronous code, wherever we are called.
+
+    - Main thread at startup (no loop running): reuse the thread's event loop and
+      leave it open, so later async work in the process isn't broken.
+    - A worker thread with no loop, such as the AnyIO thread FastMCP runs sync
+      tools in (e.g. load_campaign): give that thread a loop of its own. Before
+      this, asyncio.get_event_loop() raised there and the campaign's rulebooks
+      were silently dropped.
+    - Inside a running loop: run_until_complete would raise, so run the
+      coroutine on a short-lived helper thread and wait for it.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(_run_coroutine_sync, make_coro).result()
+
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    if loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(make_coro())
 
 class DnDStorage:
     """Handles storage and retrieval of D&D campaign data."""
@@ -805,17 +837,8 @@ class DnDStorage:
 
         # Load manager from manifest (async operation)
         try:
-            # Execute the async factory method
-            # Use get_event_loop() instead of asyncio.run() to avoid closing the loop
-            # which would break subsequent async operations in the same process
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                # No event loop running - get or create one without closing it
-                loop = asyncio.get_event_loop()
-
-            self._rulebook_manager = loop.run_until_complete(
-                RulebookManager.from_manifest(campaign_dir)
+            self._rulebook_manager = _run_coroutine_sync(
+                lambda: RulebookManager.from_manifest(campaign_dir)
             )
             logger.info(f"✅ Loaded RulebookManager for campaign '{self._current_campaign.name}'")
         except Exception as e:
